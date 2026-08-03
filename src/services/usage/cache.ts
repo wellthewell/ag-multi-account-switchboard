@@ -73,6 +73,7 @@ export class StatsCache {
         titleMap: Map<string, string>,
         stepCounts?: Map<string, number>,
         entryCounts?: Record<string, { meta: number; steps: number }>,
+        mtimes?: Record<string, number>,
     ): void {
         try {
             // Serialize titleMap as plain object for JSON persistence
@@ -87,6 +88,7 @@ export class StatsCache {
                 titleMap: titleMapObj,
                 stepCounts: stepCounts ? stepCountsObj : undefined,
                 entryCounts,
+                mtimes,
             };
             const tmp = this.filePath + '.tmp';
             fs.writeFileSync(tmp, JSON.stringify(data), 'utf-8');

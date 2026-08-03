@@ -23,12 +23,13 @@ import { createLogger } from '../../utils/logger';
 import {
     ConvoTokenData, DiskCacheData, TokenEntry,
     EP, BATCH_CONCURRENCY, HOT_THRESHOLD_MS, FETCH_TIMEOUT_MS,
-    entryFingerprint, mergePreferredEntry,
+    entryFingerprint, mergePreferredEntry, isConvoDirty,
 } from './types';
 import { aggregateFromPerConvo, extractTokens } from './aggregator';
 import { StatsCache } from './cache';
 import { ProcessLock } from './processLock';
 import { getGlobalIndexData } from '../../shared/titleResolver';
+import { BRAIN_DIR, CONVERSATIONS_DIR } from '../../shared/agPaths';
 import { concurrentPool } from './pool';
 
 const log = createLogger('UsageStats');
@@ -134,6 +135,9 @@ export class UsageStatsService {
                 return emptyStats;
             }
 
+            // Stat before fetching — see convoMtimes() and incrementalRefresh()
+            const mtimes = this.convoMtimes(allIds);
+
             // Split into HOT (recent 48h) and COLD
             const cutoffMs = Date.now() - HOT_THRESHOLD_MS;
             const { hot, cold } = this.partitionByMtime(allIds, cutoffMs);
@@ -160,7 +164,7 @@ export class UsageStatsService {
             if (cold.length === 0) {
                 log.diag('twoPhaseFullFetch: no cold conversations — writing cache and returning Phase 1 result');
                 const entryCounts = this.buildEntryCounts();
-                this.cache.write(hotData, allIds, hotStats, summaries.titleMap, summaries.stepCounts, entryCounts);
+                this.cache.write(hotData, allIds, hotStats, summaries.titleMap, summaries.stepCounts, entryCounts, mtimes);
                 return hotStats;
             }
 
@@ -180,7 +184,7 @@ export class UsageStatsService {
 
             // Build entryCounts for offset-based delta on next incremental
             const entryCounts = this.buildEntryCounts();
-            this.cache.write(merged, allIds, fullStats, summaries.titleMap, summaries.stepCounts, entryCounts);
+            this.cache.write(merged, allIds, fullStats, summaries.titleMap, summaries.stepCounts, entryCounts, mtimes);
             log.info(`twoPhaseFullFetch: done — ${fullStats.totalCalls} calls, ${Object.keys(merged).length} convos`);
 
             if (onBackfillComplete) onBackfillComplete(fullStats);
@@ -219,6 +223,29 @@ export class UsageStatsService {
     }
 
     /**
+     * Newest on-disk mtime per conversation: max(brain dir, conversations/<id>.db).
+     *
+     * The LS only *lists* trajectories it has loaded, so `GetAllCascadeTrajectories`
+     * is blind to conversations created by the agy CLI — their stepCount reads 0
+     * forever and stepCount-delta detection never marks them dirty. Disk mtime sees
+     * them because both stores are on disk regardless of who wrote them.
+     */
+    private convoMtimes(ids: string[]): Record<string, number> {
+        const out: Record<string, number> = {};
+        for (const cid of ids) {
+            let newest = 0;
+            for (const p of [path.join(BRAIN_DIR, cid), path.join(CONVERSATIONS_DIR, `${cid}.db`)]) {
+                try {
+                    const m = fs.statSync(p).mtimeMs;
+                    if (m > newest) newest = m;
+                } catch { /* expected: .db absent for IDE-only convos, or dir removed mid-scan */ }
+            }
+            if (newest > 0) out[cid] = newest;
+        }
+        return out;
+    }
+
+    /**
      * Incremental refresh — fetches NEW conversations + re-fetches MODIFIED ones.
      * Uses filesystem mtime to detect conversations that changed since last cache update.
      */
@@ -233,21 +260,30 @@ export class UsageStatsService {
             const newIds = allIds.filter(id => !cachedSet.has(id));
             log.diag(`incrementalRefresh: ${newIds.length} new conversations not in cache`);
 
-            // 2. CHANGED conversations — precise stepCount delta detection
-            //    Compare server's current stepCount vs our cached stepCount.
-            //    Only re-fetch conversations where steps actually increased.
+            // 2. CHANGED conversations — stepCount delta OR disk mtime delta.
+            //    stepCount is precise but only covers convos the LS has loaded (IDE
+            //    sessions); mtime is the fallback that catches agy CLI sessions, which
+            //    the LS never lists. Stat BEFORE fetching so a session still writing
+            //    doesn't get a newer mtime recorded than the data we actually read.
+            const currentMtimes = this.convoMtimes(allIds);
+
             const summaries = await this.fetchTrajectorySummaries(serverInfo);
             this.currentTitleMap = summaries.titleMap;
             this.currentStepCounts = summaries.stepCounts;
 
             const cachedStepCounts = diskCache.stepCounts || {};
+            const cachedMtimes = diskCache.mtimes || {};
             const changedIds = allIds.filter(id => {
                 if (!cachedSet.has(id)) return false; // already in newIds
-                const currentCount = summaries.stepCounts.get(id) ?? 0;
-                const cachedCount = cachedStepCounts[id] ?? 0;
-                return currentCount > cachedCount;
+                return isConvoDirty({
+                    stepCount: summaries.stepCounts.get(id) ?? 0,
+                    cachedStepCount: cachedStepCounts[id] ?? 0,
+                    mtime: currentMtimes[id] ?? 0,
+                    cachedMtime: cachedMtimes[id],
+                    hasEntries: !!diskCache.perConvo[id]?.entries?.length,
+                });
             });
-            log.diag(`incrementalRefresh: ${changedIds.length} conversations changed (stepCount delta)`);
+            log.diag(`incrementalRefresh: ${changedIds.length} conversations changed (stepCount or mtime delta)`);
 
             const dirtyIds = [...new Set([...newIds, ...changedIds])];
 
@@ -261,7 +297,9 @@ export class UsageStatsService {
             const offsetMap = new Map<string, { meta: number; steps: number }>();
             for (const cid of changedIds) {
                 const cached = cachedEntryCounts[cid];
-                if (cached) offsetMap.set(cid, cached);
+                // Zero cached entries means the previous fetch produced nothing usable —
+                // re-read from offset 0 instead of skipping past rows we never kept.
+                if (cached && diskCache.perConvo[cid]?.entries?.length) offsetMap.set(cid, cached);
             }
 
             log.info(`incrementalRefresh: fetching ${dirtyIds.length} dirty (${newIds.length} new + ${changedIds.length} changed)`);
@@ -306,7 +344,7 @@ export class UsageStatsService {
 
             this.deepStatsCache = stats;
             this.currentPerConvo = merged;
-            this.cache.write(merged, mergedIds, stats, summaries.titleMap, summaries.stepCounts, entryCounts);
+            this.cache.write(merged, mergedIds, stats, summaries.titleMap, summaries.stepCounts, entryCounts, { ...cachedMtimes, ...currentMtimes });
 
             log.info(`incrementalRefresh: complete — totalCalls=${stats.totalCalls} (${newIds.length} new + ${changedIds.length} changed convos updated)`);
             return true;

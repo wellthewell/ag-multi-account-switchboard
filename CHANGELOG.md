@@ -2,6 +2,12 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **Usage Stats missed agy CLI sessions** — Conversations created by the `agy` CLI stopped being counted. The language server only *lists* trajectories it has loaded, so `GetAllCascadeTrajectories` never reports CLI sessions and their `stepCount` stays `0` — the stepCount-delta gate therefore never marked them dirty. Each CLI conversation got exactly one fetch, at creation, while its store was still empty, then sat at zero entries forever. Re-fetch now also triggers on disk mtime (`brain/<id>`, `conversations/<id>.db`), which sees every session regardless of who wrote it. Conversations already stuck at zero entries are retried automatically on the next refresh; ones that already have data are not re-read.
+- **Usage Stats delta offsets skipped recoverable rows** — A conversation with zero cached entries is now re-read from offset `0` instead of resuming past metadata/step rows that were fetched but never kept.
+
 ## [3.2.1] — 2026-05-04
 
 > First 3.2.x marketplace release. Includes the 3.2.0 Conversation Guard release plus the Usage Stats accuracy fixes below.

@@ -2666,8 +2666,13 @@ body {
 /* ─── Day strip (7d / 30d / month ranges) ───
    Cells flex to fill the card instead of the year grid's fixed 12px squares —
    a 7-day window has room to breathe, a 30-day one still fits a narrow sidebar. */
+/* Same containment as .gh-grid-wrap: keep any overflow inside the card instead of
+   scrolling the whole sidebar. padding-bottom leaves room for below-cell tooltips,
+   which overflow-x would otherwise clip (one axis auto forces the other to auto). */
 .gh-strip-wrap {
-    padding: 4px 0;
+    padding: 4px 0 56px;
+    margin-bottom: -56px;
+    overflow-x: auto;
 }
 
 .gh-strip {
@@ -2717,6 +2722,10 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    /* Legend + peak side by side need ~225px; a narrow sidebar gets them stacked
+       rather than pushed off the edge. */
+    flex-wrap: wrap;
+    gap: 2px 8px;
     padding: 6px 0 0;
     font-size: 9px;
     color: var(--muted);

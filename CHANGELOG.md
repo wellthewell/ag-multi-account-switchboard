@@ -2,6 +2,11 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [3.2.5] — 2026-08-06
+
+### Fixed
+- **Day strip scrolled the sidebar sideways** — `.gh-strip-wrap` lacked the overflow containment `.gh-grid-wrap` has, so an over-wide child (the legend + peak footer, which needs ~225px) escaped the card and scrolled the whole tab. The wrapper now contains its own overflow, and the footer wraps to a second line instead of being pushed off the edge.
+
 ## [3.2.4] — 2026-08-06
 
 ### Changed

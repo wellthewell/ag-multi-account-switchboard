@@ -637,19 +637,24 @@ export function renderProviderBreakdown(providers: ProviderBucket[], totalTokens
 export function renderWeekdayChart(weekday: WeekdayBucket[]): string {
     if (!weekday || weekday.length === 0) return '<div class="deep-empty">No data</div>';
 
-    const maxCalls = Math.max(...weekday.map(w => w.calls), 1);
-    const peakDay = weekday.reduce((a, b) => b.calls > a.calls ? b : a);
+    // FORK CHANGE: plot token usage (input+output), not call count. Upstream plotted
+    // `w.calls`, which is dominated by long agentic sessions firing many small calls (one
+    // outlier day spikes its weekday). Cache reads are excluded on purpose — they are
+    // repeated context re-reads that balloon on long sessions and distort the pattern.
+    const tok = (w: WeekdayBucket) => w.input + w.output;
+    const maxTok = Math.max(...weekday.map(tok), 1);
+    const peakDay = weekday.reduce((a, b) => tok(b) > tok(a) ? b : a);
     const BAR_H = 80;
 
     let html = '<div class="weekday-chart">';
     for (const w of weekday) {
-        const h = (w.calls / maxCalls) * BAR_H;
-        const total = w.input + w.output + w.cache;
+        const v = tok(w);
+        const h = (v / maxTok) * BAR_H;
         const isPeak = w.day === peakDay.day;
         const cls = 'weekday-col' + (isPeak ? ' weekday-peak' : '');
 
         html += `<div class="${cls}">`;
-        html += `<div class="weekday-val">${fmtNum(w.calls)}</div>`;
+        html += `<div class="weekday-val">${fmtBig(v)}</div>`;
         html += `<div class="weekday-bar-wrap" style="height:${BAR_H}px">`;
         html += `<div class="weekday-bar" style="height:${h.toFixed(1)}px"></div>`;
         html += '</div>';
@@ -658,11 +663,11 @@ export function renderWeekdayChart(weekday: WeekdayBucket[]): string {
     }
     html += '</div>';
 
-    // Summary line
-    const weekdayCalls = weekday.filter(w => w.day < 5).reduce((s, w) => s + w.calls, 0);
-    const weekendCalls = weekday.filter(w => w.day >= 5).reduce((s, w) => s + w.calls, 0);
-    const total = weekdayCalls + weekendCalls;
-    const weekdayPct = total > 0 ? Math.round(weekdayCalls / total * 100) : 0;
+    // Summary line (token share, not calls)
+    const weekdayTok = weekday.filter(w => w.day < 5).reduce((s, w) => s + tok(w), 0);
+    const weekendTok = weekday.filter(w => w.day >= 5).reduce((s, w) => s + tok(w), 0);
+    const total = weekdayTok + weekendTok;
+    const weekdayPct = total > 0 ? Math.round(weekdayTok / total * 100) : 0;
     html += `<div class="weekday-summary">Weekday ${weekdayPct}% · Weekend ${100 - weekdayPct}% · Peak: <strong>${peakDay.label}</strong></div>`;
 
     return html;

@@ -2268,7 +2268,7 @@ body {
     padding: 10px 12px;
     background: rgba(22, 27, 34, .95);
     backdrop-filter: blur(12px);
-    border: 1px solid var(--divider);
+    border: 1px solid rgba(255, 255, 255, .12);
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
     pointer-events: none;
@@ -2327,15 +2327,16 @@ body {
     justify-content: space-between;
     gap: 8px;
     font-size: 11px;
-    color: var(--fg);
-    opacity: .7;
+    /* fixed light on the always-dark tooltip bg (theme vars go dark on light theme) */
+    color: #e6edf3;
+    opacity: .75;
     padding: 1.5px 0;
 }
 
 .deep-mcol-tip-row>span:last-child {
     font-weight: 600;
-    color: var(--fg);
-    opacity: .9;
+    color: #e6edf3;
+    opacity: .95;
     font-variant-numeric: tabular-nums;
     text-align: right;
 }
@@ -2359,14 +2360,14 @@ body {
 
 .deep-mcol-tip-sep {
     height: 1px;
-    background: var(--hover);
+    background: rgba(255, 255, 255, .1);
     margin: 5px 0;
 }
 
 .deep-mcol-tip-models-hdr {
     font-size: 9px;
     font-weight: 600;
-    color: var(--muted);
+    color: #9aa4af;
     text-transform: uppercase;
     letter-spacing: .5px;
     margin-bottom: 3px;
@@ -2377,7 +2378,7 @@ body {
     justify-content: space-between;
     gap: 6px;
     font-size: 10px;
-    color: var(--muted);
+    color: #9aa4af;
     padding: 1px 0;
 }
 
@@ -2391,8 +2392,8 @@ body {
 .deep-mcol-tip-model>span:last-child {
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-    color: var(--fg);
-    opacity: .7;
+    color: #c9d1d9;
+    opacity: .8;
 }
 
 /* Prevent tooltip from clipping at edges */

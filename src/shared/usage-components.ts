@@ -4,7 +4,7 @@
  * Used by: webview/renderers/usage.ts (sidebar) & providers/usageStatsPanel.ts (detail panel)
  */
 
-import { fmtNum, fmtBig, fmtShortDate, escHtml } from './helpers';
+import { fmtNum, fmtBig, fmtShortDate, escHtml, isoDay } from './helpers';
 import { DailyBucket, HourlyBucket, ModelBucket, CascadeBucket, MonthlyBucket, MonthlyModelEntry, ProviderBucket, WeekdayBucket } from '../types';
 import {
     CASCADE_LIST_LIMIT, CASCADE_TITLE_MAX_LEN,
@@ -121,6 +121,7 @@ export function renderHourlyHeatmap(hourly: HourlyBucket[], costPerToken: number
 
 const DAY_LABELS = ['Mon', '', 'Wed', '', 'Fri', '', ''];
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DAY_INITIALS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];  // Date.getDay() order
 
 /**
  * @param large — if true, uses gh-grid-lg class for bigger cells (detail panel)
@@ -196,28 +197,105 @@ export function renderDailyGrid(daily: DailyBucket[], large: boolean = false, ye
 
     for (const week of weeks) {
         html += '<div class="gh-week-col">';
-        for (const cell of week) {
-            const level = cell.future ? 0
-                : cell.total === 0 ? 0
-                : (cell.total / maxTokens) < 0.15 ? 1
-                : (cell.total / maxTokens) < 0.35 ? 2
-                : (cell.total / maxTokens) < 0.65 ? 3 : 4;
-            const costStr = (costPerToken > 0 && cell.total > 0) ? '&#10;~' + fmtDollar(cell.total * costPerToken) : '';
-            const title = cell.future ? fmtShortDate(cell.date)
-                : fmtShortDate(cell.date) + '&#10;' + (cell.total > 0 ? fmtBig(cell.total) + ' tokens&#10;' + fmtNum(cell.calls) + ' calls' + costStr : 'No activity');
-            html += '<div class="gh-cell gh-lvl-' + level + '" data-tip="' + title + '"></div>';
-        }
+        for (const cell of week) html += gridCell(cell, maxTokens, costPerToken);
         html += '</div>';
     }
     html += '</div>';
 
-    // Legend + Peak
-    html += '<div class="gh-footer">';
+    html += gridFooter(peakDay);
+    html += '</div>';
+    return html;
+}
+
+/** One heatmap square — shared by the year grid and the day strip. */
+function gridCell(
+    cell: { date: string; total: number; calls: number; future?: boolean },
+    maxTokens: number,
+    costPerToken: number,
+): string {
+    const level = cell.future || cell.total === 0 ? 0
+        : (cell.total / maxTokens) < 0.15 ? 1
+        : (cell.total / maxTokens) < 0.35 ? 2
+        : (cell.total / maxTokens) < 0.65 ? 3 : 4;
+    const costStr = (costPerToken > 0 && cell.total > 0) ? '&#10;~' + fmtDollar(cell.total * costPerToken) : '';
+    const title = cell.future ? fmtShortDate(cell.date)
+        : fmtShortDate(cell.date) + '&#10;' + (cell.total > 0 ? fmtBig(cell.total) + ' tokens&#10;' + fmtNum(cell.calls) + ' calls' + costStr : 'No activity');
+    return '<div class="gh-cell gh-lvl-' + level + '" data-tip="' + title + '"></div>';
+}
+
+/** Legend + peak-day line shared by the year grid and the day strip. */
+function gridFooter(peakDay: { date: string; total: number }): string {
+    let html = '<div class="gh-footer">';
     html += '<span class="gh-legend">Less <span class="gh-cell gh-lvl-0 gh-sm"></span><span class="gh-cell gh-lvl-1 gh-sm"></span><span class="gh-cell gh-lvl-2 gh-sm"></span><span class="gh-cell gh-lvl-3 gh-sm"></span><span class="gh-cell gh-lvl-4 gh-sm"></span> More</span>';
     if (peakDay.total > 0) {
         html += '<span class="gh-peak">Peak: <strong>' + fmtShortDate(peakDay.date) + '</strong> (' + fmtBig(peakDay.total) + ')</span>';
     }
     html += '</div>';
+    return html;
+}
+
+/**
+ * Day strip — one square per day across exactly the selected period.
+ *
+ * The year grid is the wrong shape for a short range: a 7d filter lights one
+ * column and leaves ~52 empty ones. Here every square is inside the window, and
+ * the colour scale is relative to the window's own peak, so a quiet week still
+ * shows contrast instead of washing out against an all-time maximum.
+ */
+export function renderDayStrip(
+    daily: DailyBucket[],
+    large: boolean,
+    window: { from: string; to: string },
+    costPerToken: number = 0,
+): string {
+    const today = isoDay(new Date());
+    const dateMap = new Map<string, { total: number; calls: number }>();
+    for (const d of daily) dateMap.set(d.date, { total: usageTotal(d), calls: d.calls });
+
+    type Cell = { date: string; total: number; calls: number; future: boolean };
+    const days: Cell[] = [];
+    const cursor = new Date(window.from + 'T00:00:00');
+    const end = new Date(window.to + 'T00:00:00');
+    let peakDay = { date: '', total: 0 };
+
+    while (cursor <= end && days.length < 400) {
+        const iso = isoDay(cursor);
+        const data = dateMap.get(iso);
+        const total = data?.total || 0;
+        days.push({ date: iso, total, calls: data?.calls || 0, future: iso > today });
+        if (total > peakDay.total) peakDay = { date: iso, total };
+        cursor.setDate(cursor.getDate() + 1);
+    }
+
+    const maxTokens = Math.max(...days.map(d => d.total), 1);
+    // Past ~10 squares there is no room to label every one; tick weekly instead.
+    const labelEvery = days.length > 10;
+
+    let html = '<div class="gh-strip-wrap' + (large ? ' gh-strip-lg' : '') + '">';
+    html += '<div class="gh-strip">';
+    // Tracks the last *labelled* month, not the last cell's — otherwise a silent
+    // cell swallows the rollover and the strip never names the new month.
+    let lastLabeledMonth = -1;
+    for (let i = 0; i < days.length; i++) {
+        const cell = days[i];
+        const dt = new Date(cell.date + 'T00:00:00');
+
+        let label = '';
+        if (!labelEvery || i % 7 === 0 || i === days.length - 1) {
+            label = dt.getMonth() !== lastLabeledMonth
+                ? MONTH_NAMES[dt.getMonth()] + ' ' + dt.getDate()
+                : (labelEvery ? String(dt.getDate()) : DAY_INITIALS[dt.getDay()] + ' ' + dt.getDate());
+            lastLabeledMonth = dt.getMonth();
+        }
+
+        html += '<div class="gh-strip-day">';
+        html += gridCell(cell, maxTokens, costPerToken);
+        html += '<span class="gh-strip-label">' + label + '</span>';
+        html += '</div>';
+    }
+    html += '</div>';
+
+    html += gridFooter(peakDay);
     html += '</div>';
     return html;
 }

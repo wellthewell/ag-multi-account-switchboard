@@ -4,9 +4,9 @@
  * Heavy sections (daily bars, cost, conversations) live in the detail panel only.
  */
 
-import { fmtBig, fmtNum, fmtShortDate, escHtml } from '../../shared/helpers';
+import { fmtBig, fmtNum, fmtShortDate, escHtml, gridMode } from '../../shared/helpers';
 import {
-    kpiCard, renderDailyGrid, renderHourlyHeatmap, renderCompactModelBreakdown,
+    kpiCard, renderDailyGrid, renderDayStrip, renderHourlyHeatmap, renderCompactModelBreakdown,
     renderRangeBar, rangeLabel, calculateTotalCost, fmtDollar, renderMonthlySummary,
     getMonthlyYears,
 } from '../../shared/usage-components';
@@ -163,13 +163,16 @@ function renderCompactDashboard(el: HTMLElement, stats: any): void {
     const totalTokensAll = stats.totalTokens || 1;
     const costPerToken = totalCost / totalTokensAll;
 
+    const mode = gridMode(state);
     html += '<div class="deep-section">';
-    if (state === '24h') {
+    if (mode.kind === 'hourly') {
         html += '<div class="deep-section-hdr">Activity Pattern <span class="deep-section-badge">Hourly</span></div>';
         html += renderHourlyHeatmap(stats.hourly, costPerToken);
     } else {
         html += '<div class="deep-section-hdr">Activity <span class="deep-section-badge">' + rangeLabel(state) + '</span></div>';
-        html += renderDailyGrid(stats.daily, false, undefined, costPerToken);
+        html += mode.kind === 'strip'
+            ? renderDayStrip(stats.daily, false, mode, costPerToken)
+            : renderDailyGrid(stats.daily, false, undefined, costPerToken);
     }
     html += '</div>';
 

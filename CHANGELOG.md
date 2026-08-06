@@ -2,6 +2,16 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [3.2.4] — 2026-08-06
+
+### Changed
+- **Activity grid follows the selected range** — `7d` and `30d` drew a full calendar year of squares, so ~52 of the 53 week-columns were guaranteed empty and the visible data was a single lit column. Short ranges now render a day strip spanning exactly the period: 7 squares for `7d`, 30 for `30d`, month-to-date for `Month`. Colour intensity scales to the window's own peak, so a quiet week shows contrast instead of washing out against an all-time maximum. `All Time` keeps the year grid and its year selector — the only range where a calendar year is worth drawing.
+- **`24h` and `Today` show the hourly heatmap** in the full dashboard, matching the sidebar. A day grid for a sub-day range was one square.
+- **`7d` / `30d` are now whole calendar days** — they were rolling instants (`now − 7×24h`), which straddled 8 calendar days and made the grid off-by-one against its own label. They now cover the last 7 / 30 calendar days including today, so the squares drawn and the totals counted describe the same window. Totals for these two ranges shift slightly as a result.
+
+### Fixed
+- **30d windows spanning a year boundary lost half their data** — the grid dropped any day whose date did not start with the selected year. Period-scoped windows have no year to filter by.
+
 ## [3.2.3] — 2026-08-03
 
 ### Fixed

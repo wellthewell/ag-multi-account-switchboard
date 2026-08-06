@@ -9,9 +9,9 @@
 import * as vscode from 'vscode';
 import { DeepUsageStats } from '../types';
 import { createLogger } from '../utils/logger';
-import { fmtBig, fmtNum, fmtShortDate, escHtml, getNonce } from '../shared/helpers';
+import { fmtBig, fmtNum, fmtShortDate, escHtml, getNonce, gridMode } from '../shared/helpers';
 import {
-    renderDailyGrid, renderHourlyHeatmap,
+    renderDailyGrid, renderDayStrip, renderHourlyHeatmap,
     renderModelBreakdown, renderCostEstimate,
     rangeLabel, calculateTotalCost, fmtDollar, renderMonthlySummary,
     getAvailableYears, renderYearSelector, getMonthlyYears,
@@ -307,15 +307,32 @@ export class UsageStatsPanel {
     private renderHeatmapCard(s: DeepUsageStats): string {
         const totalCost = calculateTotalCost(s.models);
         const costPerToken = s.totalTokens > 0 ? totalCost / s.totalTokens : 0;
+        const mode = gridMode(this.currentRange);
+
+        // Sub-day ranges have no meaningful day grid — show the hourly pattern instead.
+        if (mode.kind === 'hourly') {
+            let html = '<div class="up-card up-bento-full">';
+            html += `<div class="up-card-hdr">Activity <span class="up-badge">${rangeLabel(this.currentRange)}</span></div>`;
+            html += s.hourly && s.hourly.length > 0
+                ? renderHourlyHeatmap(s.hourly, costPerToken)
+                : '<div class="up-empty">No data</div>';
+            html += '</div>';
+            return html;
+        }
 
         let html = '<div class="up-card up-bento-full">';
-        html += '<div class="up-card-hdr">Activity <span class="up-badge">Contribution</span></div>';
-        if (!s.daily || s.daily.length === 0) {
-            html += '<div class="up-empty">No data</div>';
+        if (mode.kind === 'strip') {
+            // Year selector is meaningless for a bounded window — the range bar owns the period.
+            html += `<div class="up-card-hdr">Activity <span class="up-badge">${rangeLabel(this.currentRange)}</span></div>`;
+            html += renderDayStrip(s.daily || [], true, mode, costPerToken);
         } else {
-            const years = getAvailableYears(s.daily);
-            html += renderYearSelector(years, this.currentGridYear);
-            html += renderDailyGrid(s.daily, true, this.currentGridYear, costPerToken);
+            html += '<div class="up-card-hdr">Activity <span class="up-badge">Contribution</span></div>';
+            if (!s.daily || s.daily.length === 0) {
+                html += '<div class="up-empty">No data</div>';
+            } else {
+                html += renderYearSelector(getAvailableYears(s.daily), this.currentGridYear);
+                html += renderDailyGrid(s.daily, true, this.currentGridYear, costPerToken);
+            }
         }
         html += '</div>';
         return html;

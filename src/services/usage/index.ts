@@ -30,6 +30,7 @@ import { StatsCache } from './cache';
 import { ProcessLock } from './processLock';
 import { getGlobalIndexData } from '../../shared/titleResolver';
 import { BRAIN_DIR, CONVERSATIONS_DIR } from '../../shared/agPaths';
+import { gridMode } from '../../shared/helpers';
 import { concurrentPool } from './pool';
 
 const log = createLogger('UsageStats');
@@ -582,29 +583,18 @@ export class UsageStatsService {
             let cutoff: Date | null = null;
             let upperBound: Date | null = null;
 
-            switch (range) {
-                // Rolling presets (relative to now)
-                case '24h': cutoff = new Date(now.getTime() - 86400000); break;
-                case '7d': cutoff = new Date(now.getTime() - 7 * 86400000); break;
-                case '30d': cutoff = new Date(now.getTime() - 30 * 86400000); break;
-
-                // Calendar presets (midnight-aligned)
-                case 'today':
-                    cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-                    break;
-                case 'this-week': {
-                    const dayOfWeek = now.getDay() || 7; // Mon=1, Sun=7
-                    cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek + 1);
-                    break;
-                }
-                case 'this-month':
-                    cutoff = new Date(now.getFullYear(), now.getMonth(), 1);
-                    break;
-                case 'last-month':
-                    cutoff = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-                    upperBound = new Date(now.getFullYear(), now.getMonth(), 1);
-                    break;
-                default: break;
+            // gridMode is the SSOT for day-bounded ranges, so the squares the grid
+            // draws and the entries this filter keeps always describe the same window.
+            const mode = gridMode(range, now);
+            if (mode.kind === 'strip') {
+                cutoff = new Date(`${mode.from}T00:00:00`);       // local midnight
+                const dayAfter = new Date(`${mode.to}T00:00:00`);
+                dayAfter.setDate(dayAfter.getDate() + 1);
+                if (dayAfter < now) upperBound = dayAfter;        // closed window (last-month)
+            } else if (range === '24h') {
+                cutoff = new Date(now.getTime() - 86400000);      // rolling, pairs with the hourly view
+            } else if (range === 'today') {
+                cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate());
             }
 
             if (cutoff) {

@@ -546,6 +546,8 @@ reach cost."
 
 - [ ] **Step 1: Write the failing self-check**
 
+**The merge assertions below are not sufficient on their own.** They exercise `mergeSources` with hand-built arrays, so an implementation whose `readStepsUsage` always returns `[]` passes every one of them — which is exactly the failure this task shipped on its first attempt, with a fully green self-check. The section must also drive `readStepsUsage` end-to-end against a fixture database: build a temporary sqlite file with a `steps` row whose `metadata` blob is a synthetic protobuf carrying a usage submessage at field 9 and a timestamp at field 1 → field 1, then assert `readStepsUsage` returns one entry with the expected tokens and `source: 'steps'`. Place it inside the existing `hasSqlite3` guard from Task 1, since the fixture needs the command-line tool to exist. Without that, nothing in the repeatable suite can tell a working steps reader from one that silently extracts nothing.
+
 ```typescript
     // ─── steps merge: metadata wins, steps fills gaps ───
     const { mergeSources } = require('./store/usageReader');
@@ -605,14 +607,21 @@ export async function readStepsUsage(dbPath: string, learned?: LearnedEnums): Pr
         if (!cell || !cell.startsWith("X'")) continue;
         const buf = Buffer.from(cell.slice(2, -1), 'hex');
 
-        const usage = sub(buf, 9);
-        if (!usage || usage.length === 0) continue;          // a step with no model call
-        const stamp = sub(buf, 1);
-        const seconds = stamp ? (readFields(stamp).find(f => f.field === 1)?.varint ?? 0) : 0;
-        if (!seconds) continue;
+        // Same guard as decodeGenMetadataBlob: one malformed row must not take
+        // down the conversation. The protobuf reader clamps rather than throws,
+        // but a garbage varint reaching `new Date(seconds * 1000)` raises
+        // RangeError, which would otherwise reject the promise and bypass the
+        // documented "null if either table fails" contract entirely.
+        try {
+            const usage = sub(buf, 9);
+            if (!usage || usage.length === 0) continue;      // a step with no model call
+            const stamp = sub(buf, 1);
+            const seconds = stamp ? (readFields(stamp).find(f => f.field === 1)?.varint ?? 0) : 0;
+            if (!seconds) continue;
 
-        const e = decodeUsageSubmessage(usage, seconds, learned);
-        if (e) entries.push({ ...e, source: 'steps' });
+            const e = decodeUsageSubmessage(usage, seconds, 'steps', learned);
+            if (e) entries.push(e);
+        } catch { /* skip this row; siblings still count */ }
     }
     return entries;
 }

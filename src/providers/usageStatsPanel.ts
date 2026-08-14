@@ -16,6 +16,7 @@ import {
     rangeLabel, calculateTotalCost, fmtDollar, renderMonthlySummary,
     getAvailableYears, renderYearSelector, getMonthlyYears,
     renderWeekdayChart, renderEnrichedCascadeList,
+    renderEmptyRange, renderHealthCard,
 } from '../shared/usage-components';
 
 const log = createLogger('UsagePanel');
@@ -227,6 +228,8 @@ export class UsageStatsPanel {
                 this.renderCostCard(s, rl),
                 // Full-width: Conversations (enriched)
                 this.renderConversationsCard(s),
+                // Full-width: Data Health — where the numbers came from, what would make them wrong
+                this.renderHealthCard(s),
             '</div>',
         ].join('');
     }
@@ -313,9 +316,13 @@ export class UsageStatsPanel {
         if (mode.kind === 'hourly') {
             let html = '<div class="up-card up-bento-full">';
             html += `<div class="up-card-hdr">Activity <span class="up-badge">${rangeLabel(this.currentRange)}</span></div>`;
-            html += s.hourly && s.hourly.length > 0
+            // Checked against totalCalls, not s.hourly.length: buildHourlyBuckets
+            // always pre-fills all 24 hours regardless of data, so a length check
+            // here never fires — it would render a heatmap of zeros for an empty
+            // range, the exact "wall of zeros" this task exists to remove.
+            html += s.totalCalls > 0
                 ? renderHourlyHeatmap(s.hourly, costPerToken)
-                : '<div class="up-empty">No data</div>';
+                : renderEmptyRange(s.lastActivityAt || null, rangeLabel(this.currentRange));
             html += '</div>';
             return html;
         }
@@ -328,7 +335,7 @@ export class UsageStatsPanel {
         } else {
             html += '<div class="up-card-hdr">Activity <span class="up-badge">Contribution</span></div>';
             if (!s.daily || s.daily.length === 0) {
-                html += '<div class="up-empty">No data</div>';
+                html += renderEmptyRange(s.lastActivityAt || null, rangeLabel(this.currentRange));
             } else {
                 html += renderYearSelector(getAvailableYears(s.daily), this.currentGridYear);
                 html += renderDailyGrid(s.daily, true, this.currentGridYear, costPerToken);
@@ -415,5 +422,20 @@ export class UsageStatsPanel {
         html += renderEnrichedCascadeList(s.cascades, s.models, 30, 60);
         html += '</div>';
         return html;
+    }
+
+    // ─── Data Health Card ───
+
+    /**
+     * s.health is attached by UsageStatsService (see refreshFromStore and
+     * getFilteredStats), not computed here — it needs the service's own
+     * per-refresh counters (unreadable, skippedRows, lastVerification) that
+     * this panel has no access to. Absent before the first store-path refresh
+     * completes, in which case the card simply does not render — no different
+     * from not having shipped this card at all.
+     */
+    private renderHealthCard(s: DeepUsageStats): string {
+        if (!s.health) return '';
+        return renderHealthCard(s.health);
     }
 }

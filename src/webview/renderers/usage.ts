@@ -8,7 +8,7 @@ import { fmtBig, fmtNum, fmtShortDate, escHtml, gridMode } from '../../shared/he
 import {
     kpiCard, renderDailyGrid, renderDayStrip, renderHourlyHeatmap, renderCompactModelBreakdown,
     renderRangeBar, rangeLabel, calculateTotalCost, fmtDollar, renderMonthlySummary,
-    getMonthlyYears,
+    getMonthlyYears, renderEmptyRange,
 } from '../../shared/usage-components';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -163,16 +163,25 @@ function renderCompactDashboard(el: HTMLElement, stats: any): void {
     const totalTokensAll = stats.totalTokens || 1;
     const costPerToken = totalCost / totalTokensAll;
 
-    const mode = gridMode(state);
     html += '<div class="deep-section">';
-    if (mode.kind === 'hourly') {
-        html += '<div class="deep-section-hdr">Activity Pattern <span class="deep-section-badge">Hourly</span></div>';
-        html += renderHourlyHeatmap(stats.hourly, costPerToken);
+    if (stats.totalCalls === 0) {
+        // A range with no calls says so and names the last session, rather than
+        // rendering a heatmap/hourly grid of zeros — indistinguishable from a
+        // broken tool, which is exactly how the store-blindness bug presented.
+        // lastActivityAt is unfiltered on purpose: dateRange is blank in this
+        // exact case, since it is built from the (empty) filtered entries.
+        html += renderEmptyRange(stats.lastActivityAt || null, rangeLabel(state));
     } else {
-        html += '<div class="deep-section-hdr">Activity <span class="deep-section-badge">' + rangeLabel(state) + '</span></div>';
-        html += mode.kind === 'strip'
-            ? renderDayStrip(stats.daily, false, mode, costPerToken)
-            : renderDailyGrid(stats.daily, false, undefined, costPerToken);
+        const mode = gridMode(state);
+        if (mode.kind === 'hourly') {
+            html += '<div class="deep-section-hdr">Activity Pattern <span class="deep-section-badge">Hourly</span></div>';
+            html += renderHourlyHeatmap(stats.hourly, costPerToken);
+        } else {
+            html += '<div class="deep-section-hdr">Activity <span class="deep-section-badge">' + rangeLabel(state) + '</span></div>';
+            html += mode.kind === 'strip'
+                ? renderDayStrip(stats.daily, false, mode, costPerToken)
+                : renderDailyGrid(stats.daily, false, undefined, costPerToken);
+        }
     }
     html += '</div>';
 

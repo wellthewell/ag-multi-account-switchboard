@@ -3049,6 +3049,24 @@ body {
     opacity: .6;
 }
 
+/* ─── Honest empty range (names the range + last activity, never a wall of zeros) ─── */
+.usage-empty-range {
+    padding: 18px 12px;
+    text-align: center;
+}
+
+.usage-empty-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+}
+
+.usage-empty-sub {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 4px;
+}
+
 /* ─── Open Dashboard Button ─── */
 /* ─── Top Model (sidebar compact) ─── */
 .deep-top-model {
@@ -3633,6 +3651,27 @@ body {
     color: var(--vscode-descriptionForeground, #888);
     padding: 16px;
     opacity: .6;
+}
+
+/* ─── Data Health Card ─── */
+.uh-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 11px;
+    padding: 3px 0;
+    color: var(--muted);
+}
+
+.uh-row.uh-warn {
+    color: var(--vscode-editorWarning-foreground, #d29922);
+}
+
+.uh-note {
+    font-size: 10px;
+    color: var(--muted);
+    padding-top: 8px;
+    line-height: 1.5;
 }
 
 .up-loading {

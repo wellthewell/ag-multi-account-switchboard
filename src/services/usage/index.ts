@@ -35,6 +35,8 @@ import { concurrentPool } from './pool';
 import { listConversations } from './store/conversationStore';
 import { readConversationUsage } from './store/usageReader';
 import { verifyConversation } from './store/verifier';
+import { isUnknownEnumName } from './store/enumMap';
+import type { UsageHealth } from '../../shared/usage-components';
 
 const log = createLogger('UsageStats');
 
@@ -53,6 +55,14 @@ export class UsageStatsService {
 
     /** Surfaced by the health card. */
     public lastVerification: { compared: number; diverged: number; at: string } | null = null;
+
+    /**
+     * Snapshot of what fed the last store-path refresh — attached onto the
+     * DeepUsageStats object returned to callers (see refreshFromStore and
+     * getFilteredStats) rather than exposed as a separate channel, since the
+     * panel and sidebar already receive DeepUsageStats and nothing else.
+     */
+    private lastHealth: UsageHealth | null = null;
 
     private readonly cache = new StatsCache();
     private readonly processLock = new ProcessLock();
@@ -266,21 +276,23 @@ export class UsageStatsService {
         const fresh: Record<string, ConvoTokenData> = {};
         const mtimes: Record<string, number> = { ...cachedMtimes };
         let failed = 0;
+        let skippedRows = 0;
         for (const c of dirty) {
             // Freshness comes from what listConversations() already captured, not a
             // fresh stat taken after the read. A session that writes mid-read would
             // otherwise end up with a newer mtime recorded than the data actually
             // captured, and that gap would never be picked up on a later pass.
             const before = c.mtimeMs;
-            const entries = await readConversationUsage(c.dbPath);
+            const result = await readConversationUsage(c.dbPath);
             // null means the read failed outright — never "no usage". Recording a
             // failed read's mtime would freeze this conversation forever: the dirty
             // check above only retries on a zero-entry conversation or an mtime
             // advance, and a recorded mtime satisfies both. Skipping leaves the old
             // mtime in place so the next pass retries it.
-            if (entries === null) { failed++; continue; }
-            fresh[c.id] = { entries };
+            if (result === null) { failed++; continue; }
+            fresh[c.id] = { entries: result.entries };
             mtimes[c.id] = before;
+            skippedRows += result.skipped;
         }
         if (failed > 0) log.warn(`refreshFromStore: ${failed} conversations unreadable this pass; will retry`);
 
@@ -303,11 +315,30 @@ export class UsageStatsService {
             : new Map<string, string>(Object.entries(diskCache?.titleMap || {}));
         const stats = aggregateFromPerConvo(merged, titleMap);
 
+        // Recorded once, on first sight, and threaded through every subsequent
+        // write. Rewriting it on every refresh would erase the very thing it
+        // exists to say: when counting changed, not "as of the last refresh".
+        const countingChangedAt = diskCache?.countingChangedAt || new Date().toISOString();
+
         this.deepStatsCache = stats;
         this.currentPerConvo = merged;
         this.cache.write(merged, Object.keys(merged), stats, titleMap,
-            this.currentStepCounts, diskCache?.entryCounts, mtimes);
+            this.currentStepCounts, diskCache?.entryCounts, mtimes, countingChangedAt);
         log.info(`refreshFromStore: complete — ${stats.totalCalls} calls across ${Object.keys(merged).length} conversations`);
+
+        // Snapshot of what fed this pass, attached onto the stats object itself
+        // (see DeepUsageStats.health) rather than pushed through a separate
+        // channel — the panel and sidebar already receive nothing but stats.
+        this.lastHealth = {
+            source: 'store',
+            conversations: Object.keys(merged).length,
+            unreadable: failed,
+            unknownModels: stats.models.filter(m => isUnknownEnumName(m.displayName)).map(m => m.displayName),
+            skippedRows,
+            verification: this.lastVerification,
+            countingChangedAt,
+        };
+        stats.health = this.lastHealth;
 
         // Non-blocking: compare a few conversations the server can still serve.
         void (async () => {
@@ -469,7 +500,10 @@ export class UsageStatsService {
 
             this.deepStatsCache = stats;
             this.currentPerConvo = merged;
-            this.cache.write(merged, mergedIds, stats, summaries.titleMap, summaries.stepCounts, entryCounts, { ...cachedMtimes, ...currentMtimes });
+            // countingChangedAt carried forward verbatim: this is the 'server'
+            // rollback path, not the one that sets it, and a write that omitted
+            // it would erase the marker if a user ever toggles back to it.
+            this.cache.write(merged, mergedIds, stats, summaries.titleMap, summaries.stepCounts, entryCounts, { ...cachedMtimes, ...currentMtimes }, diskCache.countingChangedAt);
 
             log.info(`incrementalRefresh: complete — totalCalls=${stats.totalCalls} (${newIds.length} new + ${changedIds.length} changed convos updated)`);
             return true;
@@ -728,7 +762,12 @@ export class UsageStatsService {
             }
         }
 
-        return aggregateFromPerConvo(perConvo, titleMap, dateFilter);
+        const filtered = aggregateFromPerConvo(perConvo, titleMap, dateFilter);
+        // Health is a property of the last refresh, not of the selected range —
+        // reattach it here so the health card survives a range switch instead of
+        // vanishing every time aggregateFromPerConvo builds a fresh stats object.
+        if (this.lastHealth) filtered.health = this.lastHealth;
+        return filtered;
     }
 
     // ─── Trajectory Summaries (titles + stepCounts) ───

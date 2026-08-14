@@ -81,6 +81,8 @@ export interface DiskCacheData {
     stepCounts?: Record<string, number>;  // cascade → last known step count (delta detection)
     entryCounts?: Record<string, { meta: number; steps: number }>;  // offset-based delta fetch
     mtimes?: Record<string, number>;  // cascade → newest on-disk mtime at last fetch (delta detection)
+    /** ISO date on which store-sourced counting began. Totals before and after are not comparable. */
+    countingChangedAt?: string;
 }
 
 // ─── Shared Fingerprint ───
@@ -329,6 +331,14 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.ok(priced > 0, 'a known model is priced');
         const unpriced = calculateTotalCost([{ displayName: unknownModelName, input: 1e6, output: 0, cache: 0, cacheWrite: 0, reasoning: 0 }]);
         assert.strictEqual(unpriced, 0, 'an unknown model contributes no cost');
+
+        // The health card's unknownModels list is built by scanning ModelBucket
+        // .displayName with isUnknownEnumName. getModelDisplayName must not
+        // humanize the unknown marker away, or an unrecognised model would
+        // silently disappear from the card instead of being surfaced by it.
+        const { getModelDisplayName } = require('./aggregator');
+        const unknownDisplay = getModelDisplayName(unknownModelName, 'API_PROVIDER_GOOGLE_GEMINI', '2026-01-01T00:00:00.000Z');
+        assert.ok(isUnknownEnumName(unknownDisplay), 'an unknown model display name is still detectable — this is what the health card scans for');
         console.log('enumMap: all checks passed');
 
         // ─── usageReader: decode one gen_metadata blob ───
@@ -423,6 +433,46 @@ if (require.main === module && process.argv.includes('--self-check')) {
             console.log('readStepsUsage fixture: all checks passed');
         }
 
+        // ─── readGenMetadata: rows read but producing no entry are counted ───
+        // Nothing distinguishes "this conversation legitimately contained
+        // cancelled requests that consumed no tokens" from "a decode regression
+        // is silently dropping rows" — both are simply absent entries from
+        // outside. This drives the real function against a fixture with one
+        // good row (reusing `blob` from the gen_metadata section above), one
+        // row whose usage submessage is present but empty (a cancelled
+        // streaming request — decodeUsageSubmessage's input/output check
+        // returns null for it), and one malformed row (the same single byte
+        // already proven to yield null above), and asserts the skip is counted
+        // rather than vanishing into entries.length. A stub that always reports
+        // skipped:0 fails this; so does one that miscounts entries.length.
+        if (!hasSqlite3) {
+            console.log('readGenMetadata fixture: SKIPPED — sqlite3 not on PATH; it builds the gen_metadata fixture this test reads');
+        } else {
+            const { readGenMetadata } = require('./store/usageReader');
+            const osm3 = require('os'); const fsm3 = require('fs'); const pathm3 = require('path');
+
+            const emptyUsageBlob = encodeMessage(1, encodeMessage(4, Buffer.alloc(0)));
+            const malformedBlob = Buffer.from([0x00]);
+
+            const tmpGenDb = pathm3.join(osm3.tmpdir(), 'ag-switchboard-selfcheck-genmeta.db');
+            try { fsm3.unlinkSync(tmpGenDb); } catch { /* absent is fine */ }
+            cp.execSync(
+                `sqlite3 "${tmpGenDb}" "create table gen_metadata(idx integer, data blob, primary key(idx)); ` +
+                `insert into gen_metadata values` +
+                `(1, X'${blob.toString('hex').toUpperCase()}'), ` +
+                `(2, X'${emptyUsageBlob.toString('hex').toUpperCase()}'), ` +
+                `(3, X'${malformedBlob.toString('hex').toUpperCase()}');"`,
+            );
+
+            const genResult = await readGenMetadata(tmpGenDb);
+            assert.ok(genResult !== null, 'a readable database is not reported as a read failure');
+            assert.strictEqual(genResult.entries.length, 1, 'only the genuinely usable row decodes to an entry');
+            assert.strictEqual(genResult.skipped, 2, 'the cancelled-request row and the malformed row both count as skipped');
+
+            fsm3.unlinkSync(tmpGenDb);
+            console.log('readGenMetadata fixture: all checks passed');
+        }
+
         // ─── conversation store ───
         const os = require('os'); const fsm = require('fs'); const pathm = require('path');
         const { conversationFreshness, listConversations } = require('./store/conversationStore');
@@ -498,6 +548,22 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.strictEqual(monthTotal, 1, 'monthly buckets are deduplicated too');
         console.log('aggregator: all checks passed');
 
+        // ─── lastActivityAt: unfiltered, even when the filtered range is empty ───
+        // dateRange is built from filteredEntries and goes blank the moment the
+        // selected window has zero calls — exactly the case the empty state
+        // needs a real "last activity" date for, and exactly the case that
+        // caused the honest-empty-state UI wiring to be checked here rather
+        // than trusted from the brief's own sketch.
+        const statsOutOfWindow = aggregateFromPerConvo(
+            { c1: { entries: [mk('R9', '2026-07-01T00:00:00.000Z')] } },
+            new Map(),
+            '2026-08-01T00:00:00.000Z',   // filter excludes the only entry
+        );
+        assert.strictEqual(statsOutOfWindow.totalCalls, 0, 'the fixture entry falls outside the filter');
+        assert.strictEqual(statsOutOfWindow.dateRange.to, '', 'the filtered date range is blank when nothing falls inside it');
+        assert.strictEqual(statsOutOfWindow.lastActivityAt, '2026-07-01T00:00:00.000Z', 'lastActivityAt is unfiltered — it still reports when activity last happened');
+        console.log('lastActivityAt: all checks passed');
+
         // ─── live pricing is keyed by model id, not display label ───
         const { getModelPricingKey } = require('./aggregator');
         const uc = require('../../shared/usage-components');
@@ -572,6 +638,61 @@ if (require.main === module && process.argv.includes('--self-check')) {
         const after = Object.values(ledger).reduce((n: number, v: any) => n + v.entries.length, 0);
         assert.ok(after >= before, 'the ledger never shrinks');
         console.log('cache ledger: all checks passed');
+
+        // ─── empty state names the last activity instead of showing zeros ───
+        const { renderEmptyRange } = require('../../shared/usage-components');
+        const empty = renderEmptyRange('2026-08-06T09:20:30.000Z', 'Last 24 Hours');
+        assert.ok(empty.includes('Last 24 Hours'), 'the empty state names the range');
+        assert.ok(/Aug\s*6/.test(empty), 'the empty state names when activity last happened');
+        const never = renderEmptyRange(null, 'All Time');
+        assert.ok(never.length > 0 && !never.includes('undefined'), 'no recorded activity still renders cleanly');
+        console.log('empty state: all checks passed');
+
+        // ─── health card: three verification states, not two ───
+        // Task 9's review: rendering "compared:0" as clean manufactures exactly
+        // the false confidence the verifier exists to prevent. A stub that
+        // always prints "clean" regardless of what was actually compared must
+        // fail this, and so must one that never mentions the source/skip counts.
+        const { renderHealthCard } = require('../../shared/usage-components');
+        const baseHealth = { source: 'store', conversations: 100, unreadable: 0, unknownModels: [], skippedRows: 0, verification: null, countingChangedAt: null };
+
+        assert.ok(renderHealthCard(baseHealth).includes('conversation store'), 'the card names the data source');
+        assert.ok(renderHealthCard(baseHealth).includes('100'), 'the card shows how many conversations were read');
+
+        // State 1: the verifier has not run at all this session.
+        const cardNeverRun = renderHealthCard(baseHealth);
+        assert.ok(!/Cross-check/i.test(cardNeverRun), 'verification:null renders no cross-check row at all');
+        assert.ok(!/clean/i.test(cardNeverRun), 'verification:null must never be rendered as clean');
+
+        // State 2: it ran, but every sampled conversation was one the language
+        // server could no longer serve — compared nothing. This is the NORMAL
+        // condition this whole plan exists to work around, not a clean result.
+        const cardCompared0 = renderHealthCard({ ...baseHealth, verification: { compared: 0, diverged: 0, at: '2026-08-14T00:00:00.000Z' } });
+        assert.ok(/not verified this run/i.test(cardCompared0), 'compared:0 says it was not verified this run');
+        assert.ok(!/clean/i.test(cardCompared0), 'compared:0 must never be rendered as clean — that is the exact false confidence this exists to prevent');
+
+        // State 3: a real, agreeing comparison — the only state allowed to say clean.
+        const cardClean = renderHealthCard({ ...baseHealth, verification: { compared: 42, diverged: 0, at: '2026-08-14T00:00:00.000Z' } });
+        assert.ok(/clean/i.test(cardClean), 'a real, agreeing comparison is reported as clean');
+        assert.ok(cardClean.includes('42'), 'the clean state names how many calls were actually compared');
+
+        // A real comparison that disagreed must still warn, never read as clean.
+        const cardDiverged = renderHealthCard({ ...baseHealth, verification: { compared: 42, diverged: 3, at: '2026-08-14T00:00:00.000Z' } });
+        assert.ok(!/clean/i.test(cardDiverged), 'a divergent comparison must not say clean');
+        assert.ok(cardDiverged.includes('3'), 'the divergence count is shown');
+
+        // Skipped-rows counter: a decode regression has somewhere to become visible.
+        const cardSkipped = renderHealthCard({ ...baseHealth, skippedRows: 7 });
+        assert.ok(cardSkipped.includes('7'), 'skipped rows are surfaced as a plain count');
+        const cardNoSkips = renderHealthCard({ ...baseHealth, skippedRows: 0 });
+        assert.ok(!/skipped/i.test(cardNoSkips), 'a healthy zero skip count adds no noise to the card');
+
+        // Changeover marker: named once it exists, silent when it does not.
+        const cardWithChangeover = renderHealthCard({ ...baseHealth, countingChangedAt: '2026-08-10T00:00:00.000Z' });
+        assert.ok(/Aug\s*10/.test(cardWithChangeover), 'the changeover note names the date counting changed');
+        assert.ok(!/Aug\s*10/.test(cardNeverRun), 'no changeover note when countingChangedAt is null');
+
+        console.log('health card: all checks passed');
     })();
 }
 

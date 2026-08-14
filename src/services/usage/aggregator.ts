@@ -287,6 +287,10 @@ export function aggregateFromPerConvo(
     const filteredEntries: Array<TokenEntry & { _caW: number; _reas: number; _displayName: string }> = [];
     const cascadeList: CascadeBucket[] = [];
     let totalIn = 0, totalOut = 0, totalCa = 0, totalCaW = 0, totalReas = 0, totalCalls = 0;
+    // Unfiltered, like allEntries below — dateRange goes blank the moment the
+    // filtered window has zero calls, which is exactly the case an honest
+    // empty state needs a real "last activity" date for.
+    let lastActivityAt = '';
 
     for (const [cid, data] of Object.entries(perConvo)) {
         let cIn = 0, cOut = 0, cCache = 0, ccW = 0, cReas = 0, cCalls = 0;
@@ -302,6 +306,7 @@ export function aggregateFromPerConvo(
             seenGlobally.add(fp);
 
             allEntries.push(e);
+            if (e.ts > lastActivityAt) lastActivityAt = e.ts;
 
             // Date range filter: skip entries outside the selected window
             if (from && e.ts < from) continue;
@@ -355,5 +360,6 @@ export function aggregateFromPerConvo(
         totalCalls, daysActive: daily.length,
         cacheRate: totalTokens > 0 ? Math.round((totalCa / totalTokens) * 100) : 0,
         dateRange, daily, hourly, models, cascades: cascadeList, providers, weekday, monthly,
+        lastActivityAt,
     };
 }

@@ -26,10 +26,10 @@ export async function verifyConversation(
     const items: any[] = resp?.generatorMetadata || resp?.generator_metadata || [];
     if (!items.length) return null;                 // the server cannot serve it; nothing to compare
 
-    const fileEntries = await readGenMetadata(dbPath);
-    if (!fileEntries) return null;
+    const fileResult = await readGenMetadata(dbPath);
+    if (!fileResult) return null;
 
-    const byRid = new Map(fileEntries.filter(e => e.responseId).map(e => [e.responseId!, e]));
+    const byRid = new Map(fileResult.entries.filter(e => e.responseId).map(e => [e.responseId!, e]));
     const divergences: Divergence[] = [];
     let compared = 0;
 

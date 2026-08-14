@@ -910,3 +910,88 @@ export function rangeLabel(state: string): string {
         default:           return 'All Time';
     }
 }
+
+// ═══════════════════════════════════════════
+//  Honest Empty State
+// ═══════════════════════════════════════════
+
+/**
+ * A range with no calls renders as an explicit statement, never a wall of
+ * zeros. A silent zero is indistinguishable from a broken tool — that is
+ * exactly how the store-blindness bug presented for four days.
+ */
+export function renderEmptyRange(lastActivityIso: string | null, rangeLabelText: string): string {
+    let html = '<div class="usage-empty-range">';
+    html += `<div class="usage-empty-title">No activity in ${escHtml(rangeLabelText)}</div>`;
+    html += lastActivityIso
+        ? `<div class="usage-empty-sub">Last session ${fmtShortDate(lastActivityIso.slice(0, 10))}</div>`
+        : '<div class="usage-empty-sub">No usage recorded yet</div>';
+    html += '</div>';
+    return html;
+}
+
+// ═══════════════════════════════════════════
+//  Data Health Card
+// ═══════════════════════════════════════════
+
+export type UsageHealth = {
+    source: 'store' | 'server';
+    conversations: number;
+    unreadable: number;
+    unknownModels: string[];
+    /**
+     * Rows that were read but produced no entry — e.g. a gen_metadata row for
+     * a cancelled streaming request, which legitimately carries no usage.
+     * Nothing else distinguishes that normal case from a decode regression
+     * silently dropping rows; both are simply absent entries from outside.
+     * Surfacing the raw count at least gives a regression somewhere to become
+     * visible instead of vanishing unremarked into a smaller total.
+     */
+    skippedRows: number;
+    verification: { compared: number; diverged: number; at: string } | null;
+    countingChangedAt: string | null;
+};
+
+/**
+ * Says plainly where numbers came from and what would make them wrong.
+ *
+ * The cross-check line has THREE possible states, not two:
+ *   - verification is null        -> the verifier has not run; no line at all.
+ *   - compared is 0                -> it ran, but every sampled conversation was
+ *                                     one the language server could no longer
+ *                                     serve — the normal condition this whole
+ *                                     plan exists to work around. Rendering this
+ *                                     as "clean" would manufacture exactly the
+ *                                     false confidence the verifier exists to
+ *                                     prevent, so it says "not verified" instead.
+ *   - compared > 0                 -> a real comparison happened; only this case
+ *                                     may say "clean".
+ */
+export function renderHealthCard(h: UsageHealth): string {
+    const rows: string[] = [];
+    rows.push(`<div class="uh-row"><span>Source</span><span>${h.source === 'store' ? 'conversation store' : 'language server (legacy)'}</span></div>`);
+    rows.push(`<div class="uh-row"><span>Conversations read</span><span>${fmtNum(h.conversations)}</span></div>`);
+    if (h.unreadable > 0) {
+        rows.push(`<div class="uh-row uh-warn"><span>Unreadable</span><span>${fmtNum(h.unreadable)} — will retry</span></div>`);
+    }
+    if (h.unknownModels.length > 0) {
+        rows.push(`<div class="uh-row uh-warn"><span>Unrecognised models</span><span>${h.unknownModels.length} — excluded from cost</span></div>`);
+    }
+    if (h.skippedRows > 0) {
+        rows.push(`<div class="uh-row"><span>Skipped rows</span><span>${fmtNum(h.skippedRows)} — read, produced no entry</span></div>`);
+    }
+    if (h.verification) {
+        const v = h.verification;
+        if (v.compared === 0) {
+            rows.push(`<div class="uh-row"><span>Cross-check</span><span>not verified this run</span></div>`);
+        } else if (v.diverged === 0) {
+            rows.push(`<div class="uh-row"><span>Cross-check</span><span>clean across ${fmtNum(v.compared)} calls</span></div>`);
+        } else {
+            rows.push(`<div class="uh-row uh-warn"><span>Cross-check</span><span>${fmtNum(v.diverged)} divergences of ${fmtNum(v.compared)}</span></div>`);
+        }
+    }
+    if (h.countingChangedAt) {
+        rows.push(`<div class="uh-note">Counting changed on ${fmtShortDate(h.countingChangedAt)}: sessions the language server could not see are now included, along with sub-agent runs. Totals before and after that date are not directly comparable.</div>`);
+    }
+    return `<div class="up-card up-bento-full"><div class="up-card-hdr">Data health</div>${rows.join('')}</div>`;
+}

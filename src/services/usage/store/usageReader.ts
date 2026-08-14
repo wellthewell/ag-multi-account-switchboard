@@ -104,8 +104,21 @@ export function decodeGenMetadataBlob(buf: Buffer, learned?: LearnedEnums): Toke
     }
 }
 
-/** null means the read failed — never conflate that with "no usage". */
-export async function readGenMetadata(dbPath: string, learned?: LearnedEnums): Promise<TokenEntry[] | null> {
+/**
+ * null means the read failed — never conflate that with "no usage".
+ *
+ * `skipped` counts rows that were read but produced no entry: a row whose
+ * usage submessage is present but empty (e.g. a user-cancelled streaming
+ * request — see decodeUsageSubmessage's input/output check) and a genuinely
+ * malformed row look identical from outside — both are simply absent from
+ * `entries`. Surfacing the raw count at least gives a systematic decode
+ * regression somewhere to become visible, instead of vanishing unremarked
+ * into a smaller entries.length. Steps rows have no equivalent counter: most
+ * steps are not model calls at all (see readStepsUsage's comment), so a raw
+ * skip count there would be dominated by that normal noise rather than
+ * signalling a regression.
+ */
+export async function readGenMetadata(dbPath: string, learned?: LearnedEnums): Promise<{ entries: TokenEntry[]; skipped: number } | null> {
     const rows = await dbAllAt(dbPath, 'select quote(data) from gen_metadata order by idx');
     if (rows === null) {
         // Lazy + guarded on purpose: utils/logger imports vscode at module scope,
@@ -117,13 +130,14 @@ export async function readGenMetadata(dbPath: string, learned?: LearnedEnums): P
         return null;
     }
     const entries: TokenEntry[] = [];
+    let skipped = 0;
     for (const r of rows) {
         const cell = r[0];
-        if (!cell || !cell.startsWith("X'")) continue;
+        if (!cell || !cell.startsWith("X'")) { skipped++; continue; }
         const e = decodeGenMetadataBlob(Buffer.from(cell.slice(2, -1), 'hex'), learned);
-        if (e) entries.push(e);
+        if (e) entries.push(e); else skipped++;
     }
-    return entries;
+    return { entries, skipped };
 }
 
 /**
@@ -194,10 +208,12 @@ export function mergeSources(metadata: TokenEntry[], steps: TokenEntry[]): Token
 /**
  * Full usage for one conversation. Returns null if either table failed —
  * a partial read must never be mistaken for a complete one, or it would
- * truncate the ledger.
+ * truncate the ledger. `skipped` is gen_metadata's row-level skip count
+ * (see readGenMetadata) — the canonical accounting table, so it is the one
+ * whose skip count means something.
  */
-export async function readConversationUsage(dbPath: string, learned?: LearnedEnums): Promise<TokenEntry[] | null> {
+export async function readConversationUsage(dbPath: string, learned?: LearnedEnums): Promise<{ entries: TokenEntry[]; skipped: number } | null> {
     const [meta, steps] = await Promise.all([readGenMetadata(dbPath, learned), readStepsUsage(dbPath, learned)]);
     if (meta === null || steps === null) return null;
-    return mergeSources(meta, steps);
+    return { entries: mergeSources(meta.entries, steps), skipped: meta.skipped };
 }

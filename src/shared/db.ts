@@ -71,6 +71,65 @@ export async function dbQuery(sql: string): Promise<string | null> {
     return cliQuery(dbPath, sql);
 }
 
+/**
+ * Read every row of an arbitrary database.
+ *
+ * dbQuery() is single-row and state.vscdb-only. Reading a conversation store
+ * needs all rows from a path the caller chooses, and needs both backends to
+ * agree — the native path uses db.get() (one row) while the CLI path returns
+ * all of them, so they cannot share an implementation.
+ *
+ * Blob columns should be selected as quote(col); the CLI backend has no other
+ * way to round-trip binary, and the native backend returns a Buffer which is
+ * normalised to the same X'..' hex form here.
+ */
+export async function dbAllAt(dbPath: string, sql: string): Promise<string[][] | null> {
+    if (!dbPath || !fs.existsSync(dbPath)) return null;
+    const native = await nativeAll(dbPath, sql);
+    if (native !== undefined) return native;
+    return cliAll(dbPath, sql);
+}
+
+function toCell(v: any): string {
+    if (v === null || v === undefined) return '';
+    if (Buffer.isBuffer(v)) return `X'${v.toString('hex').toUpperCase()}'`;
+    return String(v);
+}
+
+function nativeAll(dbPath: string, sql: string): Promise<string[][] | null | undefined> {
+    return new Promise((resolve) => {
+        const sqlite3 = getNativeModule();
+        if (!sqlite3) { resolve(undefined); return; }
+        // Not OPEN_READONLY: a live write-ahead log needs the shared-memory
+        // file, and a strict read-only open fails with "unable to open
+        // database file" while a session is running. Nothing here writes.
+        const db = new sqlite3.Database(dbPath, (err: any) => {
+            if (err) { resolve(undefined); return; }
+            db.all(sql, (err2: any, rows: any[]) => {
+                db.close();
+                if (err2) { resolve(undefined); return; }
+                resolve((rows || []).map(r => Object.keys(r).map(k => toCell(r[k]))));
+            });
+        });
+    });
+}
+
+function cliAll(dbPath: string, sql: string): Promise<string[][] | null> {
+    return new Promise((resolve) => {
+        try {
+            const cp = require('child_process');
+            cp.execFile('sqlite3', ['-separator', '', dbPath, sql],
+                { timeout: CONVERSATION_READ_TIMEOUT_MS, maxBuffer: CONVERSATION_READ_MAX_BUFFER },
+                (err: any, stdout: string) => {
+                    if (err) { resolve(null); return; }
+                    const text = stdout.replace(/\n$/, '');
+                    if (!text) { resolve([]); return; }
+                    resolve(text.split('\n').map(line => line.split('')));
+                });
+        } catch { resolve(null); }
+    });
+}
+
 // ─── Write ───────────────────────────────────────────────────────────
 
 /**
@@ -222,6 +281,11 @@ function nativeExec(dbPath: string, sql: string): Promise<boolean | undefined> {
 
 const TIMEOUT = 5000;
 const MAX_BUFFER = 10 * 1024 * 1024;
+
+// Conversation stores are larger than state.vscdb and hex-encoded blobs
+// double in size, so the shared 10 MB / 5 s limits are too tight.
+const CONVERSATION_READ_TIMEOUT_MS = 15000;
+const CONVERSATION_READ_MAX_BUFFER = 128 * 1024 * 1024;
 
 function cliGet(dbPath: string, key: string): Promise<string | null> {
     const sql = `SELECT value FROM ItemTable WHERE key='${key.replace(/'/g, "''")}'`;

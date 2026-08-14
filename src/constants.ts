@@ -85,7 +85,13 @@ export const LS_SERVICE_PATH = '/exa.language_server_pb.LanguageServerService';
 
 
 
-import * as vscode from 'vscode';
+let vscode: any;
+try {
+    // VSCode module is only available in extension context
+    vscode = require('vscode');
+} catch {
+    vscode = null;
+}
 
 // Platform-aware paths — re-exported from shared SSOT (vscode-free)
 export { isMac, isLinux, isWindows, STATE_DB_PATH, LS_CERT_PATHS, LS_PROCESS_GREP } from './shared/agPaths';
@@ -107,8 +113,12 @@ export function isDiagEnabled(): boolean {
     const now = Date.now();
     if (_diagCached !== null && now - _diagCacheTs < DIAG_CACHE_TTL_MS) return _diagCached;
     try {
-        _diagCached = vscode.workspace.getConfiguration('ag-switchboard')
-            .get<boolean>('diagnosticMode', false);
+        if (vscode) {
+            const config: any = vscode.workspace.getConfiguration('ag-switchboard');
+            _diagCached = config.get('diagnosticMode', false);
+        } else {
+            _diagCached = false;
+        }
     } catch { /* expected: env parse failure — use fallback */
         _diagCached = false;
     }

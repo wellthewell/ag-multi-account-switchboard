@@ -488,6 +488,26 @@ if (require.main === module && process.argv.includes('--self-check')) {
         const monthTotal = statsDup.monthly.reduce((n: number, m: { calls: number }) => n + m.calls, 0);
         assert.strictEqual(monthTotal, 1, 'monthly buckets are deduplicated too');
         console.log('aggregator: all checks passed');
+
+        // ─── ledger semantics ───
+        const { mergeIntoLedger } = require('./cache');
+        const e1 = { responseId: 'X', source: 'metadata', inp: 1, out: 1, cache: 0, cacheWrite: 0, reasoning: 0, model: 'M', provider: 'P', ts: '2026-08-01T00:00:00.000Z' };
+        const existingLedger = {
+            'claude-code-imported': { entries: [e1, e1] },     // synthetic, no file on disk
+            'deleted-by-user':      { entries: [e1] },          // file removed since
+            'still-present':        { entries: [e1] },
+        };
+        const freshRead = { 'still-present': { entries: [e1, e1, e1] } };
+        const present = new Set(['still-present']);
+        const ledger = mergeIntoLedger(existingLedger, freshRead, present);
+        assert.strictEqual(ledger['claude-code-imported'].entries.length, 2,
+            'a conversation with no backing file is preserved — 12.94B tokens depend on this');
+        assert.strictEqual(ledger['deleted-by-user'].entries.length, 1, 'history survives deleting a conversation');
+        assert.strictEqual(ledger['still-present'].entries.length, 3, 'a conversation present on disk is replaced by the fresh read');
+        const before = Object.values(existingLedger).reduce((n: number, v: any) => n + v.entries.length, 0);
+        const after = Object.values(ledger).reduce((n: number, v: any) => n + v.entries.length, 0);
+        assert.ok(after >= before, 'the ledger never shrinks');
+        console.log('cache ledger: all checks passed');
     })();
 }
 

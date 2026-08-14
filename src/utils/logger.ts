@@ -1,6 +1,13 @@
-import * as vscode from 'vscode';
 import * as fs from 'fs';
 import { isDiagEnabled } from '../constants';
+
+let vscode: any;
+try {
+    // VSCode module is only available in extension context, not in Node.js tests
+    vscode = require('vscode');
+} catch {
+    vscode = null;
+}
 
 /** Log levels ordered by severity */
 export enum LogLevel {
@@ -19,7 +26,7 @@ const LEVEL_LABELS: Record<LogLevel, string> = {
     [LogLevel.ERROR]: 'ERROR',
 };
 
-let outputChannel: vscode.OutputChannel | null = null;
+let outputChannel: any = null;
 let minLevel: LogLevel = LogLevel.DEBUG;
 
 /** Physical file path — when set, every log line is also appended here. */
@@ -32,9 +39,11 @@ let diagSinkPath: string | null = null;
  * Initialize the shared OutputChannel.
  * Call once during extension activation.
  */
-export function initLogger(context: vscode.ExtensionContext, level: LogLevel = LogLevel.DEBUG): void {
-    outputChannel = vscode.window.createOutputChannel('AG Panel', { log: true });
-    context.subscriptions.push(outputChannel);
+export function initLogger(context: any, level: LogLevel = LogLevel.DEBUG): void {
+    if (vscode) {
+        outputChannel = vscode.window.createOutputChannel('AG Panel', { log: true });
+        context.subscriptions.push(outputChannel);
+    }
     minLevel = level;
 }
 

@@ -19,6 +19,31 @@ import { createLogger } from '../../utils/logger';
 
 const log = createLogger('StatsCache');
 
+/**
+ * The cache is a ledger, not a mirror of disk.
+ *
+ * A conversation present on disk is replaced by its fresh read — the file is
+ * the truth for it, and callers only pass a fresh read that succeeded in full.
+ * A conversation with no backing file keeps whatever it already had: that
+ * covers the synthetic Claude Code import, which exists only here, and any
+ * conversation the user deletes from Antigravity later.
+ */
+export function mergeIntoLedger(
+    existing: Record<string, ConvoTokenData>,
+    fresh: Record<string, ConvoTokenData>,
+    presentIds: Set<string>,
+): Record<string, ConvoTokenData> {
+    const out: Record<string, ConvoTokenData> = {};
+    for (const [cid, data] of Object.entries(existing)) {
+        if (!presentIds.has(cid)) out[cid] = data;   // no file — preserve verbatim
+    }
+    for (const [cid, data] of Object.entries(fresh)) out[cid] = data;
+    for (const [cid, data] of Object.entries(existing)) {
+        if (!out[cid]) out[cid] = data;              // present but not re-read this pass
+    }
+    return out;
+}
+
 export class StatsCache {
     /** Path to the disk cache file */
     get filePath(): string {

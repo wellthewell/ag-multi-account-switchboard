@@ -18,7 +18,7 @@ Copied verbatim from the spec. Every task's requirements implicitly include thes
 - **NR2 — Both tables.** `gen_metadata` **and** `steps.metadata`. 3.3% of existing entries (125 of 3,796, across 66 conversations) come only from the steps source.
 - **NR3 — Local-time day bucketing.** Days are bucketed by local date, not UTC.
 - **NR4 — Global dedupe** by `responseId`, not per-conversation.
-- **NR5 — No unverified field feeds cost.** Fields marked assumed, suspect or unknown in the spec's field map must be resolved by the verifier before their values are used in cost.
+- **NR5 — No *suspect* or *unknown* field feeds cost.** Field 10 (observed as 44 where output was 445) and any unrecognised enum stay out of cost entirely. Fields marked *assumed* — currently field 9, reasoning — are used, because holding them at zero would understate cost on 72% of entries, which is worse than the risk. **Release gate: 3.3.0 does not ship until Task 9's verifier confirms field 9 against real calls.** (Ruled 2026-08-14; NR5 originally barred assumed fields too, which contradicted Task 3.)
 - **NR6 — `steps.step_payload` is never read.** Usage metadata only. Content is never opened.
 - **NR7 — Partial reads never truncate.** Replacement of a conversation's entries happens only after a complete, successful read of both tables.
 - **Zero new dependencies.** Protobuf decoding uses `src/shared/protobuf.ts`; database access goes through `src/shared/db.ts`.
@@ -825,6 +825,10 @@ Two aggregator defects. Days are bucketed by UTC (`aggregator.ts:95`) while week
     }, new Map());
     assert.strictEqual(statsDup.totalCalls, 1, 'dedupe is global — 7 response ids already span two conversations');
     assert.strictEqual(statsDup.totalInput, 100, 'a globally deduplicated call is counted once');
+    // The monthly buckets are built from allEntries, which is populated before the
+    // date filter — dedupe has to cover that path too, not just the filtered one.
+    const monthTotal = statsDup.monthly.reduce((n, m) => n + m.calls, 0);
+    assert.strictEqual(monthTotal, 1, 'monthly buckets are deduplicated too');
     console.log('aggregator: all checks passed');
 ```
 
@@ -865,13 +869,23 @@ At the top of `aggregateFromPerConvo`, before iterating conversations, build a g
     const seenGlobally = new Set<string>();
 ```
 
-Then in the per-entry loop, immediately after the date-range filter and before any accumulation:
+Then insert the check at the **very top of the inner `for (const e of data.entries)` loop, before `allEntries.push(e)`** — not after the date filter:
 
 ```typescript
+        for (const e of data.entries) {
+            // Placement is load-bearing. allEntries feeds the monthly buckets and
+            // is populated before the date filter, so a check placed after the
+            // filter would leave monthly totals double-counted. And a duplicate
+            // outside the window would consume the fingerprint, suppressing the
+            // in-window copy. A duplicate is a duplicate regardless of window.
             const fp = entryFingerprint(e);
             if (seenGlobally.has(fp)) continue;
             seenGlobally.add(fp);
+
+            allEntries.push(e);
 ```
+
+A call recorded by both a parent and a sub-agent conversation is attributed to whichever is iterated first. That is arbitrary but stable, and counting it once in an arbitrary conversation beats counting it twice; identifying the true parent needs data the store does not expose.
 
 `entryFingerprint` is already imported by this module; if not, add it to the existing `./types` import.
 

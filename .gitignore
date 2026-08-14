@@ -137,4 +137,7 @@ dist
 
 # VS Code Extension packages
 *.vsix
-docs
+# Generated docs stay out; hand-written design specs are tracked.
+# (Negation needs docs/* rather than docs — git will not descend into an excluded dir.)
+docs/*
+!docs/superpowers

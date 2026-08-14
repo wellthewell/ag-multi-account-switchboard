@@ -989,16 +989,22 @@ export function renderHealthCard(h: UsageHealth): string {
     }
     if (h.verification) {
         const v = h.verification;
+        // Labelled "Token counts", not "Cross-check": the verifier checks token
+        // counts against the language server, not dollar rates. This card sits
+        // directly beneath an estimated-cost figure that is itself ~95% keyword
+        // guesswork on real data (most models resolve to a Placeholder M<n> with
+        // no catalogue entry) — an unqualified "Cross-check: clean" reads as
+        // vouching for the money, which this row never checked.
         if (v.compared === 0) {
-            rows.push(`<div class="uh-row"><span>Cross-check</span><span>not verified this run</span></div>`);
+            rows.push(`<div class="uh-row"><span>Token counts</span><span>not verified this run</span></div>`);
         } else if (v.diverged === 0) {
-            rows.push(`<div class="uh-row"><span>Cross-check</span><span>clean across ${fmtNum(v.compared)} calls</span></div>`);
+            rows.push(`<div class="uh-row"><span>Token counts</span><span>clean across ${fmtNum(v.compared)} calls</span></div>`);
         } else {
-            rows.push(`<div class="uh-row uh-warn"><span>Cross-check</span><span>${fmtNum(v.diverged)} divergences of ${fmtNum(v.compared)}</span></div>`);
+            rows.push(`<div class="uh-row uh-warn"><span>Token counts</span><span>${fmtNum(v.diverged)} divergences of ${fmtNum(v.compared)}</span></div>`);
         }
     }
     if (h.countingChangedAt) {
-        rows.push(`<div class="uh-note">Counting changed on ${fmtShortDate(h.countingChangedAt)}: sessions the language server could not see are now included, along with sub-agent runs. Totals before and after that date are not directly comparable.</div>`);
+        rows.push(`<div class="uh-note">Counting changed on ${fmtShortDate(h.countingChangedAt)}: recovered sessions the language server could not see, sub-agent runs, local-time day bucketing (previously UTC), global deduplication, and live pricing that had silently never applied are all reflected now. Past figures have been restated — this is not only a change going forward.</div>`);
     }
     return `<div class="up-card up-bento-full"><div class="up-card-hdr">Data health</div>${rows.join('')}</div>`;
 }

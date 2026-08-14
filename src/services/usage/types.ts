@@ -615,6 +615,28 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.ok(marchBucket, 'the fixture entry produced a March monthly bucket');
         assert.ok(Math.abs(marchBucket.cost - 1.0989) < 1e-6, 'the monthly bucket cost reflects the resolver rate, not the keyword-table fallback');
         uc.setExternalPricingResolver(null);   // restore, or later assertions inherit the stub
+
+        // ─── MUST FIX 1 regression: an unknown model is excluded from monthly cost, not billed at Sonnet ───
+        // matchPricing's hardcoded fallback ends in a bare `return pricing['sonnet']` — an
+        // unrecognised model matches none of the keyword checks and falls all the way through
+        // to that default. The three matchPricing call sites in usage-components.ts guard
+        // against this by skipping MODEL_UNKNOWN_* before ever calling matchPricing; the
+        // monthly path is a fourth call site (see above) that was missed by the original
+        // guard sweep. Reproduces the reviewer's own repro exactly: one unknown-model call of
+        // 1,000,000 input + 1,000,000 output tokens. Without the guard this yields
+        // MonthlyBucket.cost === 18 (1e6 * $3/M sonnet input + 1e6 * $15/M sonnet output,
+        // i.e. silently billed at Sonnet rates); with it, the model contributes nothing.
+        const unknownMonthly = aggregateFromPerConvo({
+            uconvo: {
+                entries: [{
+                    responseId: 'UNKNOWN1', source: 'metadata', inp: 1_000_000, out: 1_000_000, cache: 0, cacheWrite: 0, reasoning: 0,
+                    model: 'MODEL_UNKNOWN_9999', provider: 'API_PROVIDER_UNKNOWN_1', ts: '2026-04-15T00:00:00.000Z',
+                }],
+            },
+        }, new Map());
+        const aprilBucket = unknownMonthly.monthly.find((mo: { key: string }) => mo.key === '2026-04');
+        assert.ok(aprilBucket, 'the unknown-model fixture entry produced an April monthly bucket');
+        assert.strictEqual(aprilBucket.cost, 0, 'an unknown model contributes zero to MonthlyBucket.cost — excluded, never priced at the Sonnet fallback rate');
         console.log('monthly pricing key: all checks passed');
 
         // ─── ledger semantics ───
@@ -661,7 +683,11 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
         // State 1: the verifier has not run at all this session.
         const cardNeverRun = renderHealthCard(baseHealth);
-        assert.ok(!/Cross-check/i.test(cardNeverRun), 'verification:null renders no cross-check row at all');
+        // Row label is "Token counts", not "Cross-check" (see item C, final review):
+        // the verifier checks token counts against the language server, not dollar
+        // rates, and the old label sat directly under an estimated-cost figure
+        // where it could be misread as vouching for the money.
+        assert.ok(!/Token counts/i.test(cardNeverRun), 'verification:null renders no cross-check row at all');
         assert.ok(!/clean/i.test(cardNeverRun), 'verification:null must never be rendered as clean');
 
         // State 2: it ran, but every sampled conversation was one the language
@@ -811,7 +837,27 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 const dirtyTarget = conversationsD0[0];
                 const dirtyDiskCacheD0 = testCacheD0.read();
                 dirtyDiskCacheD0.mtimes[dirtyTarget.id] = dirtyTarget.mtimeMs - 1;
-                const dirtyResult = await svc.refreshFromStore(fakeServerInfo, dirtyDiskCacheD0);
+                // fetchTrajectorySummaries's own catch logs a WARN for this expected
+                // connection failure (serverInfo deliberately points at a closed port,
+                // per the comment above). A self-check that routinely prints a WARN
+                // trains a reader to skip WARNs, which is how a real one gets missed —
+                // so console.warn is muted for exactly this call and restored
+                // immediately after, even if the call itself throws. Kept as a helper
+                // (rather than a `let` reassigned inside try/finally) so dirtyResult
+                // stays a single `const` initializer — assert.ok's narrowing of it
+                // below does not reliably survive a variable reassigned across a
+                // try/finally boundary.
+                // svc comes from require('./index') (untyped, like the rest of this
+                // fixture), so refreshFromStore's return stays `any` here exactly as
+                // it did before this helper existed — deliberately not typed as
+                // Promise<T>, which would reintroduce a null-narrowing question this
+                // fixture never had to answer.
+                const withWarnMuted = async (fn: () => Promise<any>): Promise<any> => {
+                    const original = console.warn;
+                    console.warn = () => { /* expected: ECONNREFUSED from the deliberately closed fakeServerInfo port */ };
+                    try { return await fn(); } finally { console.warn = original; }
+                };
+                const dirtyResult = await withWarnMuted(() => svc.refreshFromStore(fakeServerInfo, dirtyDiskCacheD0));
                 assert.ok(dirtyResult, 'the bumped conversation makes this a real, non-empty refresh, not another early return');
                 assert.ok(dirtyResult.health, 'a full pass carries health in memory');
 

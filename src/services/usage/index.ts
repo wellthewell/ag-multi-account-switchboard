@@ -254,12 +254,44 @@ export class UsageStatsService {
         const cachedPerConvo = diskCache?.perConvo || {};
         const presentIds = new Set(conversations.map(c => c.id));
 
-        // A conversation sitting at zero entries is always retried, whatever
-        // its recorded timestamp says — that is what recovers conversations
-        // stranded by the previous server-only path.
+        // A conversation sitting at zero entries is retried unconditionally, but
+        // ONLY on the first store-mode pass — this must stay a one-shot sweep,
+        // never a permanent rule. That first sweep is what recovers conversations
+        // stranded by the previous server-only path (their entries never got
+        // backfilled because that path could not see them at all — a real
+        // machine measured 27 of 108 conversations sitting at zero entries this
+        // way). Once recovery has happened, a zero-entry conversation is
+        // trusted: it genuinely has no model calls, not one the old path
+        // missed. Without the one-shot gate, those 27 get re-read, re-aggregated
+        // (~4,400 entries), and rewritten to an atomic 1.1MB cache on every
+        // 60-second poll, forever — the exact "disk write rate unchanged"
+        // regression this plan exists to avoid, and it also makes the
+        // dirty.length===0 early-return path below unreachable in practice.
+        //
+        // Gated on countingChangedAt rather than deleted outright or keyed on
+        // `cachedMtimes[c.id] === undefined`:
+        //   - Deleting it outright silently stops recovering the conversations
+        //     this whole plan was built to recover.
+        //   - Keying it on mtime-absence is the same mistake wearing a
+        //     different hat: conversations stranded by the old server path
+        //     already have a recorded mtime (that path tracked mtimes, it just
+        //     never read the entries behind them), so mtime-absence would skip
+        //     precisely the conversations that need recovering.
+        // countingChangedAt is unset before the first store-mode pass and
+        // written by it (see below), and incrementalRefresh (the 'server'-mode
+        // path) only ever forwards whatever value it read, never mints its own
+        // — so a user who has been on usageSource:'server' the whole time still
+        // gets exactly one recovery sweep the moment they switch to 'store'. A
+        // brand-new, never-before-seen conversation is still read once
+        // regardless of this gate: it is absent from cachedMtimes, and
+        // `?? 0` makes it dirty either way.
+        //
+        // Do NOT delete this gate and do NOT key it on mtime-absence — either
+        // change silently undoes the recovery this comment exists to protect.
+        const firstStorePass = !diskCache?.countingChangedAt;
         const dirty = conversations.filter(c => {
             const hasEntries = !!cachedPerConvo[c.id]?.entries?.length;
-            if (!hasEntries) return true;
+            if (!hasEntries && firstStorePass) return true;
             return c.mtimeMs > (cachedMtimes[c.id] ?? 0);
         });
 
@@ -337,7 +369,14 @@ export class UsageStatsService {
         // Recorded once, on first sight, and threaded through every subsequent
         // write. Rewriting it on every refresh would erase the very thing it
         // exists to say: when counting changed, not "as of the last refresh".
-        const countingChangedAt = diskCache?.countingChangedAt || new Date().toISOString();
+        // A cold boot with no prior cache at all (diskCache is null) has no
+        // "before" to compare against — stamping "now" there would tell a
+        // first-ever user counting changed relative to a history they never
+        // had. Only stamp it once an actual pre-existing cache was loaded and
+        // found to be missing the field.
+        const countingChangedAt: string | null = diskCache
+            ? (diskCache.countingChangedAt || new Date().toISOString())
+            : null;
 
         // Snapshot of what fed this pass, attached onto the stats object itself
         // (see DeepUsageStats.health) BEFORE cache.write, not after — write()
@@ -359,7 +398,7 @@ export class UsageStatsService {
         this.deepStatsCache = stats;
         this.currentPerConvo = merged;
         this.cache.write(merged, Object.keys(merged), stats, titleMap,
-            this.currentStepCounts, diskCache?.entryCounts, mtimes, countingChangedAt);
+            this.currentStepCounts, diskCache?.entryCounts, mtimes, countingChangedAt ?? undefined);
         log.info(`refreshFromStore: complete — ${stats.totalCalls} calls across ${Object.keys(merged).length} conversations`);
 
         // Non-blocking: compare a few conversations the server can still serve.

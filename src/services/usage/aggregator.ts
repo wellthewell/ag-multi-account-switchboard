@@ -244,6 +244,12 @@ function buildMonthlyBuckets(allEntries: TokenEntry[]): MonthlyBucket[] {
         // Cost from ALL models (not just top 5)
         let monthCost = 0;
         for (const [name, d] of allModels) {
+            // An unrecognised model has no rate. Pricing it at zero would understate
+            // cost silently. The prefix is a literal, not imported from enumMap, to
+            // match the guard at the other three matchPricing call sites in
+            // shared/usage-components.ts — that file is bundled for the browser
+            // webview while enumMap is extension-host only.
+            if (name.startsWith('MODEL_UNKNOWN_')) continue;
             const p = matchPricing(name, d.rawModel);
             monthCost += (d.inp * p.input + d.cache * p.cache + d.cacheWrite * (p.input * 1.25) + d.out * p.output + d.reas * p.reasoning) / 1_000_000;
         }

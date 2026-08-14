@@ -141,3 +141,5 @@ dist
 # (Negation needs docs/* rather than docs — git will not descend into an excluded dir.)
 docs/*
 !docs/superpowers
+# SDD worktrees
+.worktrees/

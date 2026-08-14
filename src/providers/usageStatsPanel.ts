@@ -331,7 +331,12 @@ export class UsageStatsPanel {
         if (mode.kind === 'strip') {
             // Year selector is meaningless for a bounded window — the range bar owns the period.
             html += `<div class="up-card-hdr">Activity <span class="up-badge">${rangeLabel(this.currentRange)}</span></div>`;
-            html += renderDayStrip(s.daily || [], true, mode, costPerToken);
+            // Matches the sidebar's equivalent guard (renderCompactDashboard) so the
+            // two views agree on the same condition instead of one naming the range
+            // and the other silently drawing an all-empty strip of dated cells.
+            html += s.totalCalls > 0
+                ? renderDayStrip(s.daily || [], true, mode, costPerToken)
+                : renderEmptyRange(s.lastActivityAt || null, rangeLabel(this.currentRange));
         } else {
             html += '<div class="up-card-hdr">Activity <span class="up-badge">Contribution</span></div>';
             if (!s.daily || s.daily.length === 0) {

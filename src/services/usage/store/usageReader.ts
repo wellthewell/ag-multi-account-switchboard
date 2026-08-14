@@ -9,12 +9,14 @@
  * fields are shaped into a MetadataUsage and handed to extractTokens(), so the
  * two sources cannot drift apart in how a number becomes a token count.
  *
- * No logger here by design: this module is required directly by plain `node`
- * (self-check, and ad-hoc store inspection), where utils/logger.ts's
+ * No static logger import here by design: this module is required directly by
+ * plain `node` (self-check, and ad-hoc store inspection), where utils/logger.ts's
  * `import ... from 'vscode'` has nothing to resolve against. Its siblings
  * (shared/db.ts, shared/protobuf.ts, store/enumMap.ts) follow the same rule —
- * return null/skip on failure and let the extension-host caller, which already
- * owns a real logger, decide whether to log.
+ * decode failures return null/skip silently. The one exception is the
+ * read-failure branch in readGenMetadata below, which lazily and guardedly
+ * requires the real logger so a failure is at least named in the extension
+ * host, without breaking any plain-node caller.
  */
 
 import { readFields } from '../../../shared/protobuf';
@@ -87,7 +89,15 @@ export function decodeGenMetadataBlob(buf: Buffer, learned?: LearnedEnums): Toke
 /** null means the read failed — never conflate that with "no usage". */
 export async function readGenMetadata(dbPath: string, learned?: LearnedEnums): Promise<TokenEntry[] | null> {
     const rows = await dbAllAt(dbPath, 'select quote(data) from gen_metadata order by idx');
-    if (rows === null) return null;
+    if (rows === null) {
+        // Lazy + guarded on purpose: utils/logger imports vscode at module scope,
+        // so a static import would break every plain-node caller — the self-check
+        // and the store verification scripts both run outside the extension host.
+        // This branch only runs on a real read failure, never during those.
+        try { require('../../../utils/logger').createLogger('UsageReader').warn(`gen_metadata unreadable: ${dbPath}`); }
+        catch { /* outside the extension host — the caller reports the failure count */ }
+        return null;
+    }
     const entries: TokenEntry[] = [];
     for (const r of rows) {
         const cell = r[0];

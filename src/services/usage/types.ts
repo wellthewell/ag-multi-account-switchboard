@@ -342,6 +342,7 @@ if (require.main === module && process.argv.includes('--self-check')) {
             encodeVarintField(5, 12232),     // cache read
             encodeVarintField(6, 24),        // provider -> Gemini
             encodeVarintField(9, 401),       // reasoning
+            encodeVarintField(10, 44),       // responseOutputTokens — divergent on purpose
             encodeString(11, 'eXZkatT5D8ONjuMPy9KhkA0'),  // responseId
         ]);
         const stamp = encodeMessage(9, encodeMessage(4, encodeVarintField(1, 1784968824)));
@@ -349,7 +350,7 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
         const entry = decodeGenMetadataBlob(blob);
         assert.strictEqual(entry.inp, 15027, 'input tokens');
-        assert.strictEqual(entry.out, 126, 'output tokens');
+        assert.strictEqual(entry.out, 126, 'output comes from field 3, never field 10 — field 10 is unverified and has been seen disagreeing');
         assert.strictEqual(entry.cache, 12232, 'cache read tokens');
         assert.strictEqual(entry.reasoning, 401, 'reasoning tokens — priced, on 72% of entries');
         assert.strictEqual(entry.model, 'MODEL_PLACEHOLDER_M73', 'model resolved from enum');

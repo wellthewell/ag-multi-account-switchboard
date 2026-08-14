@@ -1804,18 +1804,23 @@ Task 6's review raised this against its day-bucketing fixture, and the same weak
 
 Neither production fix is timezone-dependent; `isoDay` is correct under any offset. Only the tests are.
 
-Make both assertions self-guarding rather than relying on the ambient timezone. In `src/services/usage/types.ts`, at the day-bucketing assertion added by Task 6 (the `new Date(2026, 7, 5, 1, 30, 0)` fixture) and at the grid assertion above, assert the precondition explicitly before asserting the behaviour:
+Make both assertions self-guarding rather than relying on the ambient timezone. In `src/services/usage/types.ts`, guard **only** the day-bucketing assertion added by Task 6 (the `new Date(2026, 7, 5, 1, 30, 0)` fixture) and the grid assertion above:
 
 ```typescript
     // These two assertions only tell a correct implementation from a UTC one when
-    // local midnight and UTC midnight fall on different dates. State that as a
-    // requirement rather than letting the check quietly pass under a UTC runner.
+    // local midnight and UTC midnight fall on different dates. Say so out loud
+    // rather than letting them quietly pass under a UTC runner.
     const offsetMinutes = -new Date().getTimezoneOffset();
-    assert.ok(offsetMinutes > 0,
-        `local-date assertions need a positive UTC offset to discriminate; this runtime is UTC${offsetMinutes >= 0 ? '+' : ''}${offsetMinutes / 60}. Re-run with TZ=Asia/Bangkok.`);
+    if (offsetMinutes <= 0) {
+        console.log(`timezone-sensitive assertions: SKIPPED — this runtime is UTC${offsetMinutes >= 0 ? '+' : ''}${offsetMinutes / 60}. Re-run with TZ=Asia/Bangkok.`);
+    } else {
+        // ...only the two timezone-dependent assertions...
+    }
 ```
 
-A failing precondition is the correct outcome: it says "this check could not be performed here" instead of reporting a pass it did not earn.
+**Skip, not fail — and the distinction was argued.** An earlier draft of this plan specified `assert.ok(offsetMinutes > 0, ...)`, reasoning that a hard failure is more honest than an unearned pass. That was wrong: it would make the self-check permanently unpassable on any UTC machine, even though every other section is perfectly valid there, which would render the suite useless as a gate outside positive-offset timezones. The skip is honest so long as it prints a visible notice **and** omits the section's "all checks passed" line, so a skip can never be misread as a pass. It also matches the precedent already established for a missing `sqlite3` binary. (Ruled 2026-08-14 after Task 12's review flagged the deviation.)
+
+**Guard exactly two assertions and no more.** The `aggregator` section also contains Task 6's global-dedupe checks — `totalCalls`, `totalInput`, and the load-bearing `monthTotal` — none of which depend on the timezone. They ran unconditionally before this task and must continue to. Hoist any timezone-agnostic setup (the entry factory, the fixture timestamp) above the guard so the dedupe block stays outside it. Widening the guard to cover them is a coverage regression, not a simplification.
 
 - [ ] **Step 5: Run the self-check and verify it passes**
 
@@ -1825,13 +1830,13 @@ npm run compile:extension && node out/services/usage/types.js --self-check
 
 Expected: `daily grid keys: all checks passed`, all earlier sections still passing.
 
-Then confirm the guard itself works — run once forcing a zero offset and check that it fails loudly rather than passing:
+Then confirm the guard itself works — run once forcing a zero offset:
 
 ```bash
 TZ=UTC node out/services/usage/types.js --self-check
 ```
 
-Expected: the precondition assertion fails with the "needs a positive UTC offset" message. Put that output in your report.
+Expected: the `timezone-sensitive assertions: SKIPPED` notice prints, **neither** `daily grid keys` nor the timezone-dependent part of `aggregator` reports a pass, and the dedupe assertions still run and still report their pass. That last point is the one to check carefully — it is what distinguishes a correctly scoped guard from one that quietly disables unrelated coverage. Put that output in your report.
 
 - [ ] **Step 6: Commit**
 

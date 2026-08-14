@@ -141,7 +141,7 @@ export interface MonthlyAccumulator {
     cacheWrite: number;
     reasoning: number;
     calls: number;
-    models: Record<string, { tokens: number; inp: number; out: number; cache: number; cacheWrite: number; reas: number }>;
+    models: Record<string, { rawModel: string; tokens: number; inp: number; out: number; cache: number; cacheWrite: number; reas: number }>;
 }
 
 // ─── Model Placeholder Maps ───
@@ -511,6 +511,36 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.strictEqual(seen[0], 'claude-fable-5', 'the id is tried FIRST, before the display label');
         uc.setExternalPricingResolver(null);   // restore, or later assertions inherit the stub
         console.log('pricing key: all checks passed');
+
+        // ─── the monthly aggregation path is a fourth matchPricing call site ───
+        // buildMonthlyBuckets (inside aggregateFromPerConvo) computes MonthlyBucket.cost —
+        // the dollar figure printed directly above every bar in the monthly chart, and the
+        // first line of its hover tooltip. It was missed by the original count of "three
+        // call sites" because the pricingKey parameter is optional, so an un-migrated call
+        // compiles clean under --strict; only a stub that records what it was handed (or a
+        // grep) surfaces it. Deliberately mismatched stub rates (999 vs the real 0.5/3
+        // keyword-table rate for gemini-3-flash) so a reverted fix shows up as a wildly
+        // different cost, not just a coincidentally-equal one.
+        const seenMonthly: string[] = [];
+        uc.setExternalPricingResolver((key: string) => {
+            seenMonthly.push(key);
+            return key === 'gemini-3-flash-c' ? { input: 999, output: 999, cache: 999, reasoning: 999 } : null;
+        });
+        const monthlyStats = aggregateFromPerConvo({
+            mconvo: {
+                entries: [{
+                    responseId: 'MONTHLY1', source: 'metadata', inp: 1000, out: 100, cache: 0, cacheWrite: 0, reasoning: 0,
+                    model: 'MODEL_PLACEHOLDER_M47', provider: 'API_PROVIDER_GOOGLE_GEMINI', ts: '2026-03-15T00:00:00.000Z',
+                }],
+            },
+        }, new Map());
+        assert.strictEqual(seenMonthly.length, 1, 'exactly one pricing lookup for the single fixture model');
+        assert.strictEqual(seenMonthly[0], 'gemini-3-flash-c', 'the monthly path asks the resolver for the model id first, not the display label');
+        const marchBucket = monthlyStats.monthly.find((mo: { key: string }) => mo.key === '2026-03');
+        assert.ok(marchBucket, 'the fixture entry produced a March monthly bucket');
+        assert.ok(Math.abs(marchBucket.cost - 1.0989) < 1e-6, 'the monthly bucket cost reflects the resolver rate, not the keyword-table fallback');
+        uc.setExternalPricingResolver(null);   // restore, or later assertions inherit the stub
+        console.log('monthly pricing key: all checks passed');
 
         // ─── ledger semantics ───
         const { mergeIntoLedger } = require('./cache');

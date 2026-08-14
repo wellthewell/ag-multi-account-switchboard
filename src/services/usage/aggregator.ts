@@ -222,7 +222,7 @@ function buildMonthlyBuckets(allEntries: TokenEntry[]): MonthlyBucket[] {
         mm.reasoning += e.reasoning || 0;
         mm.calls++;
         const dn = getModelDisplayName(e.model, e.provider, e.ts);
-        if (!mm.models[dn]) mm.models[dn] = { tokens: 0, inp: 0, out: 0, cache: 0, cacheWrite: 0, reas: 0 };
+        if (!mm.models[dn]) mm.models[dn] = { rawModel: getModelPricingKey(e.model, e.ts), tokens: 0, inp: 0, out: 0, cache: 0, cacheWrite: 0, reas: 0 };
         mm.models[dn].tokens += e.inp + e.out + e.cache + (e.cacheWrite || 0) + (e.reasoning || 0);
         mm.models[dn].inp += e.inp;
         mm.models[dn].out += e.out;
@@ -244,12 +244,12 @@ function buildMonthlyBuckets(allEntries: TokenEntry[]): MonthlyBucket[] {
         // Cost from ALL models (not just top 5)
         let monthCost = 0;
         for (const [name, d] of allModels) {
-            const p = matchPricing(name);
+            const p = matchPricing(name, d.rawModel);
             monthCost += (d.inp * p.input + d.cache * p.cache + d.cacheWrite * (p.input * 1.25) + d.out * p.output + d.reas * p.reasoning) / 1_000_000;
         }
         const topModels: MonthlyModelEntry[] = allModels
             .slice(0, 5)
-            .map(([name, d]) => ({ displayName: name, tokens: d.tokens, cost: 0, inp: d.inp, out: d.out, cache: d.cache, cacheWrite: d.cacheWrite, reas: d.reas }));
+            .map(([name, d]) => ({ displayName: name, rawModel: d.rawModel, tokens: d.tokens, cost: 0, inp: d.inp, out: d.out, cache: d.cache, cacheWrite: d.cacheWrite, reas: d.reas }));
         monthly.push({
             key, label: MNAMES[monthIdx],
             input: md.input, output: md.output,

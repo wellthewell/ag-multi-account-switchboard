@@ -249,6 +249,8 @@ export interface WeekdayBucket extends TokenBucket {
 /** Monthly breakdown per model (for tooltip) */
 export interface MonthlyModelEntry {
     displayName: string;
+    /** Resolved model id for pricing. Optional: caches written before this existed have no value. */
+    rawModel?: string;
     tokens: number;
     cost: number;
     inp: number;

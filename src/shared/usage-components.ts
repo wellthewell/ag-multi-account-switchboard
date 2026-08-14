@@ -549,7 +549,7 @@ function estimateTopModelCosts(m: MonthlyBucket): MonthlyModelEntry[] {
         if (tm.displayName && tm.displayName.startsWith('MODEL_UNKNOWN_')) {
             return { ...tm, cost: 0 };
         }
-        const p = matchPricing(tm.displayName);
+        const p = matchPricing(tm.displayName, tm.rawModel);
         const cost = (tm.inp * p.input + tm.cache * p.cache + (tm.cacheWrite || 0) * (p.input * 1.25) + tm.out * p.output + tm.reas * p.reasoning) / 1_000_000;
         return { ...tm, cost };
     });

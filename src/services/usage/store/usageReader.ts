@@ -21,7 +21,7 @@
 
 import { readFields } from '../../../shared/protobuf';
 import { dbAllAt } from '../../../shared/db';
-import { TokenEntry, MetadataUsage } from '../types';
+import { TokenEntry, MetadataUsage, entryFingerprint, mergePreferredEntry } from '../types';
 import { extractTokens } from '../aggregator';
 import { modelNameFromEnum, providerNameFromEnum } from './enumMap';
 
@@ -106,4 +106,59 @@ export async function readGenMetadata(dbPath: string, learned?: LearnedEnums): P
         if (e) entries.push(e);
     }
     return entries;
+}
+
+/**
+ * Steps rows carry the same usage submessage nested one level deeper, under
+ * the step's metadata blob. step_payload is never selected: it holds
+ * conversation content and is the bulk of the file.
+ */
+export async function readStepsUsage(dbPath: string, learned?: LearnedEnums): Promise<TokenEntry[] | null> {
+    const rows = await dbAllAt(dbPath, 'select quote(metadata) from steps where metadata is not null order by idx');
+    if (rows === null) {
+        // Lazy + guarded on purpose: utils/logger imports vscode at module scope,
+        // so a static import would break every plain-node caller — the self-check
+        // and the store verification scripts both run outside the extension host.
+        // This branch only runs on a real read failure, never during those.
+        try { require('../../../utils/logger').createLogger('UsageReader').warn(`steps unreadable: ${dbPath}`); }
+        catch { /* outside the extension host — the caller reports the failure count */ }
+        return null;
+    }
+    const entries: TokenEntry[] = [];
+    for (const r of rows) {
+        const cell = r[0];
+        if (!cell || !cell.startsWith("X'")) continue;
+        const buf = Buffer.from(cell.slice(2, -1), 'hex');
+        // Try the blob directly, then each length-delimited child: the usage
+        // submessage sits at a different depth depending on step type.
+        const candidates: Buffer[] = [buf, ...readFields(buf).filter(f => f.wireType === 2 && f.bytes).map(f => f.bytes!)];
+        for (const c of candidates) {
+            const e = decodeGenMetadataBlob(c, learned);
+            if (e) { entries.push({ ...e, source: 'steps' }); break; }
+        }
+    }
+    return entries;
+}
+
+/** Metadata is the canonical accounting; steps only fills gaps. */
+export function mergeSources(metadata: TokenEntry[], steps: TokenEntry[]): TokenEntry[] {
+    const byFingerprint = new Map<string, TokenEntry>();
+    for (const e of metadata) byFingerprint.set(entryFingerprint(e), e);
+    for (const e of steps) {
+        const fp = entryFingerprint(e);
+        const existing = byFingerprint.get(fp);
+        byFingerprint.set(fp, existing ? mergePreferredEntry(existing, e) : e);
+    }
+    return [...byFingerprint.values()];
+}
+
+/**
+ * Full usage for one conversation. Returns null if either table failed —
+ * a partial read must never be mistaken for a complete one, or it would
+ * truncate the ledger.
+ */
+export async function readConversationUsage(dbPath: string, learned?: LearnedEnums): Promise<TokenEntry[] | null> {
+    const [meta, steps] = await Promise.all([readGenMetadata(dbPath, learned), readStepsUsage(dbPath, learned)]);
+    if (meta === null || steps === null) return null;
+    return mergeSources(meta, steps);
 }

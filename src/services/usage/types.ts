@@ -360,6 +360,20 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.strictEqual(entry.ts, new Date(1784968824000).toISOString(), 'timestamp from unix seconds');
         assert.strictEqual(decodeGenMetadataBlob(Buffer.from([0x00])), null, 'a malformed blob yields null, never a zero entry');
         console.log('usageReader: all checks passed');
+
+        // ─── steps merge: metadata wins, steps fills gaps ───
+        const { mergeSources } = require('./store/usageReader');
+        const fromMeta = { responseId: 'A', source: 'metadata', inp: 10, out: 1, cache: 0, cacheWrite: 0, reasoning: 0, model: 'M', provider: 'P', ts: '2026-08-01T00:00:00.000Z' };
+        const fromStepsSame = { responseId: 'A', source: 'steps', inp: 99, out: 9, cache: 0, cacheWrite: 0, reasoning: 0, model: 'M', provider: 'P', ts: '2026-08-01T00:00:00.000Z' };
+        const fromStepsOnly = { responseId: 'B', source: 'steps', inp: 5, out: 1, cache: 0, cacheWrite: 0, reasoning: 0, model: 'M', provider: 'P', ts: '2026-08-01T00:00:00.000Z' };
+        // Annotated explicitly: mergeSources comes through require(), which types as
+        // any regardless of the target module's real signature, so .find()'s callback
+        // below would get no contextual parameter type without this.
+        const merged: TokenEntry[] = mergeSources([fromMeta], [fromStepsSame, fromStepsOnly]);
+        assert.strictEqual(merged.length, 2, 'the duplicate collapses, the steps-only entry survives');
+        assert.strictEqual(merged.find(e => e.responseId === 'A')!.inp, 10, 'metadata wins for a shared response id');
+        assert.ok(merged.find(e => e.responseId === 'B'), 'steps-only entries are kept — 3.3% of history depends on this');
+        console.log('usageReader steps merge: all checks passed');
     })();
 }
 

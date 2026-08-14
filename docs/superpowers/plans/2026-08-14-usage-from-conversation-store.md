@@ -41,6 +41,8 @@ Path: `gen_metadata.data` → field 1 → field 4 (the usage submessage).
 
 Timestamp: field 1 → field 9 → field 4 → field 1, unix seconds.
 
+**Cache-write is not decoded at all.** Its field number was never identified, so the reader never sets those keys and `extractTokens` falls through to zero for every entry, unconditionally. This is a decoder gap, not a sampling gap — no amount of additional sampling can validate it, and Task 9's "0 divergences" results are consistent with either genuine agreement or a field matching by construction. The verifier is the tripwire: a non-zero value from the server against the file's structural zero registers as a divergence and surfaces immediately. Until that fires, cache-write must not be described as resting on the same evidence as input, output, cache-read and reasoning.
+
 ## File structure
 
 | File | Responsibility |

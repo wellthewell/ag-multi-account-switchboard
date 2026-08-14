@@ -119,7 +119,7 @@ Path: `gen_metadata.data` → field 1 → field 4 (the usage submessage).
 | 9     | reasoning tokens       | **assumed** — matches one sample (401); present on 2,743 of 3,796 entries |
 | 10    | responseOutputTokens   | **assumed and suspect** — observed as 44 where outputTokens was 445 |
 | 11    | responseId             | verified                                          |
-| cache creation (write) | —        | **unknown** — never observed non-zero in Antigravity data |
+| cache creation (write) | —        | **not decoded** — field number never identified; the reader never sets it, so every entry reports zero. A decoder gap, not a sampling gap. The verifier is the tripwire. |
 
 Timestamp: field 1 → field 9 → field 4 → field 1, unix seconds.
 

@@ -440,33 +440,52 @@ if (require.main === module && process.argv.includes('--self-check')) {
         fsm.rmSync(tmpDir, { recursive: true, force: true });
         console.log('conversationStore: all checks passed');
 
-        // ─── local-day bucketing and global dedupe ───
-        const { aggregateFromPerConvo } = require('./aggregator');
-        const mk = (rid: string, ts: string) => ({ responseId: rid, source: 'metadata', inp: 100, out: 10, cache: 0, cacheWrite: 0, reasoning: 0, model: 'MODEL_PLACEHOLDER_M73', provider: 'API_PROVIDER_GOOGLE_GEMINI', ts });
+        // ─── timezone-sensitive assertions need a precondition guard ───
+        // These two assertions only tell a correct implementation from a UTC one when
+        // local midnight and UTC midnight fall on different dates. State that as a
+        // requirement rather than letting the check quietly pass under a UTC runner.
+        const offsetMinutes = -new Date().getTimezoneOffset();
+        if (!(offsetMinutes > 0)) {
+            console.log(`timezone-sensitive assertions: SKIPPED — this runtime is UTC${offsetMinutes >= 0 ? '+' : ''}${offsetMinutes / 60}. Re-run with TZ=Asia/Bangkok.`);
+        } else {
+            // ─── local-day bucketing and global dedupe ───
+            const { aggregateFromPerConvo } = require('./aggregator');
+            const mk = (rid: string, ts: string) => ({ responseId: rid, source: 'metadata', inp: 100, out: 10, cache: 0, cacheWrite: 0, reasoning: 0, model: 'MODEL_PLACEHOLDER_M73', provider: 'API_PROVIDER_GOOGLE_GEMINI', ts });
 
-        // 01:30 local on the 5th. This runtime is UTC+7 (Indochina Time) — a positive
-        // offset makes EARLY-morning local hours the ones that cross the UTC boundary
-        // (01:30 local on the 5th is 18:30 UTC on the 4th), not late-evening ones
-        // (23:30 local on the 5th is still 16:30 UTC the same day, so it would pass
-        // under both the old and new bucketing and prove nothing). This mirrors the
-        // real 01:17/01:39 sessions that land on the previous day under UTC slicing.
-        const local = new Date(2026, 7, 5, 1, 30, 0);
-        const statsDay = aggregateFromPerConvo({ c1: { entries: [mk('R1', local.toISOString())] } }, new Map());
-        const { isoDay } = require('../../shared/helpers');
-        assert.strictEqual(statsDay.daily[0].date, isoDay(local), 'a day bucket uses the local date, not the UTC one');
+            // 01:30 local on the 5th. This runtime is UTC+7 (Indochina Time) — a positive
+            // offset makes EARLY-morning local hours the ones that cross the UTC boundary
+            // (01:30 local on the 5th is 18:30 UTC on the 4th), not late-evening ones
+            // (23:30 local on the 5th is still 16:30 UTC the same day, so it would pass
+            // under both the old and new bucketing and prove nothing). This mirrors the
+            // real 01:17/01:39 sessions that land on the previous day under UTC slicing.
+            const local = new Date(2026, 7, 5, 1, 30, 0);
+            const statsDay = aggregateFromPerConvo({ c1: { entries: [mk('R1', local.toISOString())] } }, new Map());
+            const { isoDay } = require('../../shared/helpers');
+            assert.strictEqual(statsDay.daily[0].date, isoDay(local), 'a day bucket uses the local date, not the UTC one');
 
-        // the same call recorded under two conversations must count once
-        const statsDup = aggregateFromPerConvo({
-            parent: { entries: [mk('SHARED', local.toISOString())] },
-            child:  { entries: [mk('SHARED', local.toISOString())] },
-        }, new Map());
-        assert.strictEqual(statsDup.totalCalls, 1, 'dedupe is global — 7 response ids already span two conversations');
-        assert.strictEqual(statsDup.totalInput, 100, 'a globally deduplicated call is counted once');
-        // The monthly buckets are built from allEntries, which is populated before the
-        // date filter — dedupe has to cover that path too, not just the filtered one.
-        const monthTotal = statsDup.monthly.reduce((n: number, m: { calls: number }) => n + m.calls, 0);
-        assert.strictEqual(monthTotal, 1, 'monthly buckets are deduplicated too');
-        console.log('aggregator: all checks passed');
+            // ─── the year grid must key cells by local date ───
+            const { renderDailyGrid: rdg } = require('../../shared/usage-components');
+            // 2026-08-10 is a Monday; in a Monday-first grid its cell belongs in row 0.
+            const gridHtml = rdg([{ date: '2026-08-10', input: 1000, output: 100, cache: 0, cacheWrite: 0, reasoning: 0, calls: 5 }], false, 2026, 0);
+            const gridCells = [...gridHtml.matchAll(/<div class="gh-cell gh-lvl-(\d)" data-tip="([^"]*)"><\/div>/g)];
+            const litIndex = gridCells.findIndex(c => c[1] !== '0');
+            assert.ok(litIndex >= 0, 'the bucket lights a cell at all');
+            assert.strictEqual(litIndex % 7, 0, 'a Monday bucket lands in the Monday row — cells are keyed by local date, not UTC');
+            console.log('daily grid keys: all checks passed');
+
+            // the same call recorded under two conversations must count once
+            const statsDup = aggregateFromPerConvo({
+                parent: { entries: [mk('SHARED', local.toISOString())] },
+                child:  { entries: [mk('SHARED', local.toISOString())] },
+            }, new Map());
+            assert.strictEqual(statsDup.totalCalls, 1, 'dedupe is global — 7 response ids already span two conversations');
+            assert.strictEqual(statsDup.totalInput, 100, 'a globally deduplicated call is counted once');
+            // The monthly buckets are built from allEntries, which is populated before the
+            // date filter — dedupe has to cover that path too, not just the filtered one.
+            const monthTotal = statsDup.monthly.reduce((n: number, m: { calls: number }) => n + m.calls, 0);
+            assert.strictEqual(monthTotal, 1, 'monthly buckets are deduplicated too');
+            console.log('aggregator: all checks passed');
+        }
     })();
 }
 

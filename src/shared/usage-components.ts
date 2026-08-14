@@ -130,7 +130,7 @@ const DAY_INITIALS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];  // Date
  */
 export function renderDailyGrid(daily: DailyBucket[], large: boolean = false, year?: number, costPerToken: number = 0): string {
     const selectedYear = year ?? new Date().getFullYear();
-    const today = new Date().toISOString().slice(0, 10);
+    const today = isoDay(new Date());
 
     // Build date → tokens lookup
     const dateMap = new Map<string, { total: number; calls: number }>();
@@ -165,7 +165,10 @@ export function renderDailyGrid(daily: DailyBucket[], large: boolean = false, ye
     let peakDay = { date: '', total: 0, calls: 0 };
 
     while (cursor <= gridEnd) {
-        const iso = cursor.toISOString().slice(0, 10);
+        // The cursor is built from local dates (gridStart was created from getDate() math),
+        // so it must be read back as a local date — toISOString re-interprets local midnight
+        // as the previous day in UTC for positive offsets, shifting every cell backward by one.
+        const iso = isoDay(cursor);
         const data = dateMap.get(iso);
         const total = data?.total || 0;
         const calls = data?.calls || 0;

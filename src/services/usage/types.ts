@@ -374,6 +374,54 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.strictEqual(merged.find(e => e.responseId === 'A')!.inp, 10, 'metadata wins for a shared response id');
         assert.ok(merged.find(e => e.responseId === 'B'), 'steps-only entries are kept — 3.3% of history depends on this');
         console.log('usageReader steps merge: all checks passed');
+
+        // ─── readStepsUsage: end-to-end against a fixture database ───
+        // The merge assertions above use hand-built arrays and never call readStepsUsage
+        // itself — an implementation that always returns [] passes every one of them,
+        // which is exactly the failure this task shipped on its first attempt with a
+        // fully green self-check. This drives the real function against a fixture whose
+        // usage submessage sits at field 9 and whose timestamp sits at field 1 -> field 1
+        // (the paths measured against real data — see readStepsUsage's own comment),
+        // reusing the same fixture-building encoders as the gen_metadata section above.
+        if (!hasSqlite3) {
+            console.log('readStepsUsage fixture: SKIPPED — sqlite3 not on PATH; it builds the steps fixture this test reads');
+        } else {
+            const { readStepsUsage } = require('./store/usageReader');
+            const osm = require('os'); const fsm2 = require('fs'); const pathm2 = require('path');
+
+            // Same field numbering as the gen_metadata fixture above (model/input/output/
+            // provider/responseId) — only the wrapping differs: field 9 directly, not
+            // nested under field 1 -> field 4. Values match a real recovered entry
+            // (conversation 7423b555, responseId j3JYatroJvinjuMP1KbZ4Qc) for realism.
+            const stepsUsage = Buffer.concat([
+                encodeVarintField(1, 1050),      // model enum -> MODEL_PLACEHOLDER_M50
+                encodeVarintField(2, 73),        // input
+                encodeVarintField(3, 5),         // output
+                encodeVarintField(6, 24),        // provider -> Gemini
+                encodeString(11, 'fixtureStepsResponseId'),
+            ]);
+            // timestamp: field 1 -> field 1 (unix seconds) — NOT the gen_metadata
+            // path's field 1 -> field 9 -> field 4 -> field 1.
+            const stepsStamp = encodeMessage(1, encodeVarintField(1, 1752600000));
+            const stepsBlob = Buffer.concat([encodeMessage(9, stepsUsage), stepsStamp]);
+
+            const tmpStepsDb = pathm2.join(osm.tmpdir(), 'ag-switchboard-selfcheck-steps.db');
+            try { fsm2.unlinkSync(tmpStepsDb); } catch { /* absent is fine */ }
+            cp.execSync(
+                `sqlite3 "${tmpStepsDb}" "create table steps(idx integer, metadata blob, primary key(idx)); ` +
+                `insert into steps values(1, X'${stepsBlob.toString('hex').toUpperCase()}');"`,
+            );
+
+            const stepsEntries = await readStepsUsage(tmpStepsDb);
+            assert.strictEqual(stepsEntries.length, 1, 'readStepsUsage decodes exactly one entry from the fixture row');
+            assert.strictEqual(stepsEntries[0].inp, 73, 'input tokens decoded from the field-9 usage submessage');
+            assert.strictEqual(stepsEntries[0].out, 5, 'output tokens decoded from the field-9 usage submessage');
+            assert.strictEqual(stepsEntries[0].model, 'MODEL_PLACEHOLDER_M50', 'model resolved from the field-9 submessage');
+            assert.strictEqual(stepsEntries[0].source, 'steps', 'source tagged steps, not metadata');
+
+            fsm2.unlinkSync(tmpStepsDb);
+            console.log('readStepsUsage fixture: all checks passed');
+        }
     })();
 }
 

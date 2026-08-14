@@ -21,7 +21,7 @@
 
 import { readFields } from '../../../shared/protobuf';
 import { dbAllAt } from '../../../shared/db';
-import { TokenEntry, MetadataUsage, entryFingerprint, mergePreferredEntry } from '../types';
+import { TokenEntry, TokenEntrySource, MetadataUsage, entryFingerprint, mergePreferredEntry } from '../types';
 import { extractTokens } from '../aggregator';
 import { modelNameFromEnum, providerNameFromEnum } from './enumMap';
 
@@ -45,9 +45,12 @@ function sub(buf: Buffer, field: number): Buffer | null {
  * Interprets an already-located usage submessage plus its unix-seconds
  * timestamp. Shared by both sources so they cannot drift apart in how a
  * number becomes a token count — each source only differs in how it locates
- * `usage` and `seconds` before calling in.
+ * `usage` and `seconds` before calling in. `source` is taken explicitly
+ * rather than hardcoded, so a future third call site cannot forget to tag
+ * it and silently mislabel entries into mergePreferredEntry's metadata-wins
+ * logic.
  */
-function decodeUsageSubmessage(usage: Buffer, seconds: number, learned?: LearnedEnums): TokenEntry | null {
+function decodeUsageSubmessage(usage: Buffer, seconds: number, source: TokenEntrySource, learned?: LearnedEnums): TokenEntry | null {
     const g: Record<number, any> = {};
     for (const f of readFields(usage)) {
         g[f.field] = f.wireType === 0 ? f.varint : f.bytes;
@@ -75,7 +78,7 @@ function decodeUsageSubmessage(usage: Buffer, seconds: number, learned?: Learned
     const ridBuf = g[F_RESPONSE_ID];
     return {
         responseId: Buffer.isBuffer(ridBuf) ? ridBuf.toString('utf-8') : undefined,
-        source: 'metadata',
+        source,
         inp: t.inp, out: t.out, cache: t.cache, cacheWrite: t.cacheWrite, reasoning: t.reasoning,
         model, provider,
         ts: new Date(seconds * 1000).toISOString(),
@@ -95,7 +98,7 @@ export function decodeGenMetadataBlob(buf: Buffer, learned?: LearnedEnums): Toke
         const t2 = t1 ? sub(t1, 4) : null;
         if (t2) seconds = readFields(t2).find(f => f.field === 1)?.varint ?? 0;
 
-        return decodeUsageSubmessage(usage, seconds, learned);
+        return decodeUsageSubmessage(usage, seconds, 'metadata', learned);
     } catch { /* a malformed row must not take down the conversation */
         return null;
     }
@@ -157,14 +160,21 @@ export async function readStepsUsage(dbPath: string, learned?: LearnedEnums): Pr
         if (!cell || !cell.startsWith("X'")) continue;
         const buf = Buffer.from(cell.slice(2, -1), 'hex');
 
-        const usage = sub(buf, 9);
-        if (!usage || usage.length === 0) continue;          // a step with no model call
-        const stamp = sub(buf, 1);
-        const seconds = stamp ? (readFields(stamp).find(f => f.field === 1)?.varint ?? 0) : 0;
-        if (!seconds) continue;
+        // Same guard as decodeGenMetadataBlob: one malformed row must not take
+        // down the conversation. The protobuf reader clamps rather than throws,
+        // but a garbage varint reaching `new Date(seconds * 1000)` raises
+        // RangeError, which would otherwise reject the promise and bypass the
+        // documented "null if either table fails" contract entirely.
+        try {
+            const usage = sub(buf, 9);
+            if (!usage || usage.length === 0) continue;      // a step with no model call
+            const stamp = sub(buf, 1);
+            const seconds = stamp ? (readFields(stamp).find(f => f.field === 1)?.varint ?? 0) : 0;
+            if (!seconds) continue;
 
-        const e = decodeUsageSubmessage(usage, seconds, learned);
-        if (e) entries.push({ ...e, source: 'steps' });
+            const e = decodeUsageSubmessage(usage, seconds, 'steps', learned);
+            if (e) entries.push(e);
+        } catch { /* skip this row; siblings still count */ }
     }
     return entries;
 }

@@ -422,6 +422,23 @@ if (require.main === module && process.argv.includes('--self-check')) {
             fsm2.unlinkSync(tmpStepsDb);
             console.log('readStepsUsage fixture: all checks passed');
         }
+
+        // ─── conversation store ───
+        const os = require('os'); const fsm = require('fs'); const pathm = require('path');
+        const { conversationFreshness, listConversations } = require('./store/conversationStore');
+        const tmpDir = fsm.mkdtempSync(pathm.join(os.tmpdir(), 'ag-store-'));
+        const dbFile = pathm.join(tmpDir, 'x.db');
+        const brainDir = pathm.join(tmpDir, 'brain-x');
+        fsm.writeFileSync(dbFile, 'x'); fsm.mkdirSync(brainDir);
+        fsm.utimesSync(dbFile, new Date(1000 * 1000), new Date(1000 * 1000));
+        fsm.utimesSync(brainDir, new Date(1000 * 1000), new Date(1000 * 1000));
+        fsm.writeFileSync(dbFile + '-wal', 'w');
+        fsm.utimesSync(dbFile + '-wal', new Date(9000 * 1000), new Date(9000 * 1000));
+        assert.strictEqual(conversationFreshness(dbFile, brainDir), 9000 * 1000,
+            'the write-ahead log is the freshest signal — the .db timestamp lags up to a checkpoint');
+        assert.ok(Array.isArray(listConversations()), 'listing never throws, even with roots missing');
+        fsm.rmSync(tmpDir, { recursive: true, force: true });
+        console.log('conversationStore: all checks passed');
     })();
 }
 

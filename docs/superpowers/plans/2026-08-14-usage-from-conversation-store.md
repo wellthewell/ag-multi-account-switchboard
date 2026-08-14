@@ -703,10 +703,14 @@ The extension looks in one install root. On a machine without the maintainer's s
     const dbFile = pathm.join(tmpDir, 'x.db');
     const brainDir = pathm.join(tmpDir, 'brain-x');
     fsm.writeFileSync(dbFile, 'x'); fsm.mkdirSync(brainDir);
-    fsm.utimesSync(dbFile, new Date(1000), new Date(1000));
-    fsm.utimesSync(brainDir, new Date(1000), new Date(1000));
+    // new Date(n) is n MILLISECONDS after the epoch, and statSync reports mtimeMs
+    // in milliseconds too — so these must be scaled to match the assertion below.
+    // The gap between the .db and the -wal is what gives this test its power: an
+    // implementation that stats only the .db returns 1000000 and fails.
+    fsm.utimesSync(dbFile, new Date(1000000), new Date(1000000));
+    fsm.utimesSync(brainDir, new Date(1000000), new Date(1000000));
     fsm.writeFileSync(dbFile + '-wal', 'w');
-    fsm.utimesSync(dbFile + '-wal', new Date(9000), new Date(9000));
+    fsm.utimesSync(dbFile + '-wal', new Date(9000000), new Date(9000000));
     assert.strictEqual(conversationFreshness(dbFile, brainDir), 9000 * 1000,
         'the write-ahead log is the freshest signal — the .db timestamp lags up to a checkpoint');
     assert.ok(Array.isArray(listConversations()), 'listing never throws, even with roots missing');

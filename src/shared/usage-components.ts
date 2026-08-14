@@ -449,10 +449,13 @@ export function getPricing(): Record<string, PricingEntry> {
     return { ...pricing };
 }
 
-export function matchPricing(displayName: string): PricingEntry {
+export function matchPricing(displayName: string, pricingKey?: string): PricingEntry {
     // 1. External resolver (LiteLLM dynamic catalog — highest priority after settings override)
     if (externalResolver) {
-        const external = externalResolver(displayName);
+        // The id first — the catalog is keyed by id, and the display label
+        // matches nothing. Falling back to the label costs one failed lookup
+        // and keeps older cached buckets, which carry no id, working.
+        const external = (pricingKey && externalResolver(pricingKey)) || externalResolver(displayName);
         if (external) return external;
     }
 
@@ -491,7 +494,7 @@ export function calculateTotalCost(models: ModelBucket[]): number {
         // cost silently. The prefix is a literal, not imported from enumMap, because
         // this file is bundled for the browser webview while enumMap is extension-host only.
         if (m.displayName && m.displayName.startsWith('MODEL_UNKNOWN_')) continue;
-        const p = matchPricing(m.displayName);
+        const p = matchPricing(m.displayName, m.rawModel);
         total += (m.input / 1e6) * p.input
             + ((m.cache || 0) / 1e6) * p.cache
             + ((m.cacheWrite || 0) / 1e6) * (p.input * 1.25)
@@ -845,7 +848,7 @@ export function renderCostEstimate(models: ModelBucket[]): string {
         // cost silently. The prefix is a literal, not imported from enumMap, because
         // this file is bundled for the browser webview while enumMap is extension-host only.
         if (m.displayName && m.displayName.startsWith('MODEL_UNKNOWN_')) continue;
-        const p = matchPricing(m.displayName);
+        const p = matchPricing(m.displayName, m.rawModel);
         const inputCost    = (m.input / 1e6) * p.input;
         const cacheCost    = ((m.cache || 0) / 1e6) * p.cache;
         const outputCost   = (m.output / 1e6) * p.output;

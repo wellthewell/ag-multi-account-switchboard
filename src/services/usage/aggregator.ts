@@ -26,6 +26,22 @@ function extractVersion(raw: string): string {
 }
 
 /**
+ * The id a model should be priced under — resolved from its placeholder, but
+ * before humanization.
+ *
+ * The pricing catalog is keyed by API model id (`claude-fable-5`), while the
+ * display layer produces labels (`Fable 5`). Handing the catalog a label
+ * matches nothing, which is why dynamic pricing silently never applied.
+ */
+export function getModelPricingKey(raw: string, ts?: string): string {
+    if (!raw || raw === 'Unknown') return '';
+    if (raw === 'MODEL_PLACEHOLDER_M26' && ts && ts.slice(0, 10) < OPUS_46_CUTOFF) {
+        return 'claude-opus-4-5-thinking';
+    }
+    return PLACEHOLDER_MAP[raw] || raw;
+}
+
+/**
  * Resolve raw model string to display name.
  * @param ts — ISO timestamp for date-aware placeholder resolution (optional)
  */
@@ -34,11 +50,7 @@ export function getModelDisplayName(raw: string, apiProvider?: string, ts?: stri
         return apiProvider ? (PROVIDER_DISPLAY[apiProvider] || apiProvider.replace(/^API_PROVIDER_/i, '')) : 'Unknown';
     }
 
-    // Resolve placeholders — M26 is date-aware (4.5 before cutoff, 4.6 after)
-    let resolved = PLACEHOLDER_MAP[raw] || raw;
-    if (raw === 'MODEL_PLACEHOLDER_M26' && ts && ts.slice(0, 10) < OPUS_46_CUTOFF) {
-        resolved = 'claude-opus-4-5-thinking';
-    }
+    let resolved = getModelPricingKey(raw, ts);
 
     // Unmapped placeholders: show as readable label (e.g. "Placeholder M50")
     if (resolved === raw && /^MODEL_PLACEHOLDER_/i.test(raw)) {
@@ -137,7 +149,7 @@ function buildModelBuckets(entries: Array<TokenEntry & { _caW: number; _reas: nu
     const map: Record<string, ModelBucket> = {};
     for (const e of entries) {
         const dn = e._displayName;
-        if (!map[dn]) map[dn] = { displayName: dn, input: 0, output: 0, cache: 0, cacheWrite: 0, reasoning: 0, calls: 0 };
+        if (!map[dn]) map[dn] = { displayName: dn, rawModel: getModelPricingKey(e.model, e.ts), input: 0, output: 0, cache: 0, cacheWrite: 0, reasoning: 0, calls: 0 };
         map[dn].input += e.inp;
         map[dn].output += e.out;
         map[dn].cache += e.cache;

@@ -224,6 +224,8 @@ export interface HourlyBucket extends TokenBucket {
 /** Model breakdown entry */
 export interface ModelBucket extends TokenBucket {
     displayName: string;
+    /** Resolved model id for pricing. Optional: caches written before this existed have no value. */
+    rawModel?: string;
 }
 
 /** Cascade/conversation breakdown */

@@ -489,6 +489,29 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.strictEqual(monthTotal, 1, 'monthly buckets are deduplicated too');
         console.log('aggregator: all checks passed');
 
+        // ─── live pricing is keyed by model id, not display label ───
+        const { getModelPricingKey } = require('./aggregator');
+        const uc = require('../../shared/usage-components');
+
+        assert.strictEqual(getModelPricingKey('MODEL_PLACEHOLDER_M47'), 'gemini-3-flash-c', 'mapped placeholder resolves to its id');
+        assert.strictEqual(getModelPricingKey('MODEL_PLACEHOLDER_M26', '2026-01-01T00:00:00.000Z'), 'claude-opus-4-5-thinking', 'M26 is date-aware before the cutoff');
+        assert.strictEqual(getModelPricingKey('MODEL_PLACEHOLDER_M26', '2026-08-01T00:00:00.000Z'), 'claude-opus-4-6-thinking', 'M26 after the cutoff');
+        assert.strictEqual(getModelPricingKey('MODEL_PLACEHOLDER_M266'), 'MODEL_PLACEHOLDER_M266', 'an unmapped placeholder has no better key than itself');
+
+        // The regression this task exists for: the resolver must receive the id, not the label.
+        const seen: string[] = [];
+        uc.setExternalPricingResolver((key: string) => {
+            seen.push(key);
+            return key === 'claude-fable-5' ? { input: 10, output: 50, cache: 1, reasoning: 50 } : null;
+        });
+        const p = uc.matchPricing('Fable 5', 'claude-fable-5');
+        assert.strictEqual(p.input, 10, 'live pricing wins when the key resolves');
+        assert.strictEqual(p.output, 50, 'live output rate applied');
+        assert.ok(seen.includes('claude-fable-5'), 'the resolver was asked about the model id');
+        assert.strictEqual(seen[0], 'claude-fable-5', 'the id is tried FIRST, before the display label');
+        uc.setExternalPricingResolver(null);   // restore, or later assertions inherit the stub
+        console.log('pricing key: all checks passed');
+
         // ─── ledger semantics ───
         const { mergeIntoLedger } = require('./cache');
         const e1 = { responseId: 'X', source: 'metadata', inp: 1, out: 1, cache: 0, cacheWrite: 0, reasoning: 0, model: 'M', provider: 'P', ts: '2026-08-01T00:00:00.000Z' };

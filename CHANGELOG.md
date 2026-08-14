@@ -2,6 +2,44 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [3.3.0] — 2026-08-15
+
+Usage is now read from Antigravity's conversation store instead of from the language server.
+
+### Why this release exists
+
+The language server can only answer for conversations that existed **when its process started**. Anything the `agy` command-line client created afterwards was invisible to it — permanently, for the life of that process. A conversation created 35 seconds after the server booted was already unreachable. For anyone working command-line-first, entire days reported zero while the data sat intact on disk.
+
+A second defect made the loss permanent: a fetch that returned nothing still recorded a freshness marker, so once a session stopped writing, its conversation was frozen at zero forever.
+
+### Your numbers will change, for five separate reasons
+
+Historical figures are **restated**, not just changed going forward. All five apply at once, which is why totals move in more than one direction:
+
+1. **Recovered sessions.** Days that reported zero now report their real usage. On the development machine: two days went from 0 to 184 and 64 calls, and four more became visible for the first time.
+2. **Sub-agent runs are counted.** When a session spawns helper agents, each has its own record. The language server refused to serve them, so they had never been counted once — about 3% of all calls.
+3. **Days are bucketed by local date.** They were bucketed by UTC while weekday charts and the activity grid used local dates, so the two disagreed. Late-evening sessions landed on the previous day.
+4. **Duplicates are removed globally.** Deduplication was per-conversation, so a call recorded by two conversations counted twice.
+5. **Live pricing actually applies.** The dynamic pricing catalogue was queried with a humanised display name while it is keyed by model id, so no lookup had ever matched and every cost figure came from a keyword guesser. One model was under-priced 3.3×.
+
+### Added
+- **Data health card** in the full dashboard — where numbers came from, how many conversations were read, how many were unreadable, which models had no known rate and were excluded from cost, and whether a cross-check ran.
+- **Cross-check against the language server.** For any conversation it can still serve, the store decode is compared field by field. The reasoning-token field, previously matched against a single sample, is now confirmed across 125 real calls with no divergence.
+- **Honest empty states.** A range with no activity says so and names the last session, instead of rendering zeros indistinguishable from a malfunction — which is how the original bug hid for days.
+- **`ag-switchboard.usageSource`** — set to `server` to restore the previous behaviour. Temporary, and intended for removal.
+
+### Fixed
+- **All three Antigravity install locations are scanned.** Only one was, so on any machine where the command-line client and the IDE keep separate directories, every command-line conversation was invisible.
+- **The activity grid keyed its cells in UTC** while walking local dates, so in any positive-offset timezone every cell sat one day off its true weekday — a Monday's usage rendered in the Tuesday column. The tooltip printed the key rather than the slot, which is why it looked correct.
+- **Unrecognised models are excluded from cost** rather than silently billed at Sonnet rates.
+- **The native database module now loads on macOS.** The search path listed one application directory that does not contain it, so every read spawned a command-line process instead — roughly 9 ms against under 1 ms.
+- **Reads no longer mark conversations as changed.** Freshness counted a sidecar file that readers create, so the first read of any conversation made it look modified forever after and refresh degenerated into a full rescan.
+- **Monthly cost, the model breakdown and the cost card no longer disagree** about the same month.
+
+### Notes
+- Existing usage history is preserved. Conversations with no file on disk — including any synthetic import — are never reconciled away.
+- Cache-write tokens are not decoded; that field's identifier was never determined, so it reports zero. The cross-check will flag it if a future build starts emitting them.
+
 ## [3.2.5] — 2026-08-06
 
 ### Fixed

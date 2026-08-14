@@ -485,7 +485,8 @@ export function calculateTotalCost(models: ModelBucket[]): number {
     let total = 0;
     for (const m of models) {
         // An unrecognised model has no rate. Pricing it at zero would understate
-        // cost silently; the health card reports these instead.
+        // cost silently. The prefix is a literal, not imported from enumMap, because
+        // this file is bundled for the browser webview while enumMap is extension-host only.
         if (m.displayName && m.displayName.startsWith('MODEL_UNKNOWN_')) continue;
         const p = matchPricing(m.displayName);
         total += (m.input / 1e6) * p.input
@@ -536,6 +537,12 @@ export function renderCompactModelBreakdown(models: ModelBucket[], totalTokens: 
 /** Estimate cost for a single month bucket using per-model pricing */
 function estimateTopModelCosts(m: MonthlyBucket): MonthlyModelEntry[] {
     return m.topModels.map(tm => {
+        // An unrecognised model has no rate. Pricing it at zero would understate
+        // cost silently. The prefix is a literal, not imported from enumMap, because
+        // this file is bundled for the browser webview while enumMap is extension-host only.
+        if (tm.displayName && tm.displayName.startsWith('MODEL_UNKNOWN_')) {
+            return { ...tm, cost: 0 };
+        }
         const p = matchPricing(tm.displayName);
         const cost = (tm.inp * p.input + tm.cache * p.cache + (tm.cacheWrite || 0) * (p.input * 1.25) + tm.out * p.output + tm.reas * p.reasoning) / 1_000_000;
         return { ...tm, cost };
@@ -831,6 +838,10 @@ export function renderCostEstimate(models: ModelBucket[]): string {
     let grandTotal = 0;
 
     for (const m of models) {
+        // An unrecognised model has no rate. Pricing it at zero would understate
+        // cost silently. The prefix is a literal, not imported from enumMap, because
+        // this file is bundled for the browser webview while enumMap is extension-host only.
+        if (m.displayName && m.displayName.startsWith('MODEL_UNKNOWN_')) continue;
         const p = matchPricing(m.displayName);
         const inputCost    = (m.input / 1e6) * p.input;
         const cacheCost    = ((m.cache || 0) / 1e6) * p.cache;

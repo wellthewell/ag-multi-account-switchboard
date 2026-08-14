@@ -496,14 +496,16 @@ if (require.main === module && process.argv.includes('--self-check')) {
             'claude-code-imported': { entries: [e1, e1] },     // synthetic, no file on disk
             'deleted-by-user':      { entries: [e1] },          // file removed since
             'still-present':        { entries: [e1] },
+            'present-not-reread':   { entries: [e1, e1] },      // on disk, but not re-read this pass
         };
         const freshRead = { 'still-present': { entries: [e1, e1, e1] } };
-        const present = new Set(['still-present']);
+        const present = new Set(['still-present', 'present-not-reread']);
         const ledger = mergeIntoLedger(existingLedger, freshRead, present);
         assert.strictEqual(ledger['claude-code-imported'].entries.length, 2,
             'a conversation with no backing file is preserved — 12.94B tokens depend on this');
         assert.strictEqual(ledger['deleted-by-user'].entries.length, 1, 'history survives deleting a conversation');
         assert.strictEqual(ledger['still-present'].entries.length, 3, 'a conversation present on disk is replaced by the fresh read');
+        assert.strictEqual(ledger['present-not-reread'].entries.length, 2, 'a conversation on disk but not re-read this pass keeps what it had');
         const before = Object.values(existingLedger).reduce((n: number, v: any) => n + v.entries.length, 0);
         const after = Object.values(ledger).reduce((n: number, v: any) => n + v.entries.length, 0);
         assert.ok(after >= before, 'the ledger never shrinks');

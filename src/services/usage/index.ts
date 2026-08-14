@@ -270,6 +270,25 @@ export class UsageStatsService {
         // — mirror that here instead of re-aggregating and rewriting an identical
         // cache. this.deepStatsCache is left exactly as the caller already set it.
         if (dirty.length === 0) {
+            // This is the common case, not an edge case — a quick reload or a
+            // second window with nothing new — so the health card must not go
+            // dark here. No new read happened, so unreadable/skippedRows are 0
+            // (not carried forward: both are documented as "this pass", and no
+            // pass ran); unknownModels comes from the stats already on disk,
+            // which are still current since nothing changed. No cache.write
+            // happens on this path, so countingChangedAt is carried forward
+            // as-is rather than fabricated — a fresh value here would never
+            // be persisted and would silently drift on every such reload.
+            this.lastHealth = {
+                source: 'store',
+                conversations: conversations.length,
+                unreadable: 0,
+                unknownModels: (diskCache?.stats?.models || []).filter(m => isUnknownEnumName(m.displayName)).map(m => m.displayName),
+                skippedRows: 0,
+                verification: this.lastVerification,
+                countingChangedAt: diskCache?.countingChangedAt || null,
+            };
+            if (this.deepStatsCache) this.deepStatsCache.health = this.lastHealth;
             return null;
         }
 
@@ -320,15 +339,12 @@ export class UsageStatsService {
         // exists to say: when counting changed, not "as of the last refresh".
         const countingChangedAt = diskCache?.countingChangedAt || new Date().toISOString();
 
-        this.deepStatsCache = stats;
-        this.currentPerConvo = merged;
-        this.cache.write(merged, Object.keys(merged), stats, titleMap,
-            this.currentStepCounts, diskCache?.entryCounts, mtimes, countingChangedAt);
-        log.info(`refreshFromStore: complete — ${stats.totalCalls} calls across ${Object.keys(merged).length} conversations`);
-
         // Snapshot of what fed this pass, attached onto the stats object itself
-        // (see DeepUsageStats.health) rather than pushed through a separate
-        // channel — the panel and sidebar already receive nothing but stats.
+        // (see DeepUsageStats.health) BEFORE cache.write, not after — write()
+        // serializes synchronously via JSON.stringify, so assigning .health
+        // any later would leave the persisted copy permanently one snapshot
+        // behind, and every subsequent process start would load stats with no
+        // .health at all.
         this.lastHealth = {
             source: 'store',
             conversations: Object.keys(merged).length,
@@ -339,6 +355,12 @@ export class UsageStatsService {
             countingChangedAt,
         };
         stats.health = this.lastHealth;
+
+        this.deepStatsCache = stats;
+        this.currentPerConvo = merged;
+        this.cache.write(merged, Object.keys(merged), stats, titleMap,
+            this.currentStepCounts, diskCache?.entryCounts, mtimes, countingChangedAt);
+        log.info(`refreshFromStore: complete — ${stats.totalCalls} calls across ${Object.keys(merged).length} conversations`);
 
         // Non-blocking: compare a few conversations the server can still serve.
         void (async () => {
@@ -445,6 +467,23 @@ export class UsageStatsService {
 
             if (dirtyIds.length === 0) {
                 log.info('incrementalRefresh: nothing to fetch — all conversations up to date');
+                // Same reasoning as refreshFromStore's mirror-image early return:
+                // this is the common case, not an edge case, and must not leave
+                // the card either dark or showing a stale 'store' source/verification
+                // superimposed on data this path is now serving. verification is
+                // hardcoded null, never this.lastVerification — this path runs no
+                // verifier at all, and carrying forward a prior store-mode result
+                // would be exactly the false confidence Important 2 flagged.
+                this.lastHealth = {
+                    source: 'server',
+                    conversations: diskCache.fetchedIds.length,
+                    unreadable: 0,
+                    unknownModels: (diskCache.stats?.models || []).filter(m => isUnknownEnumName(m.displayName)).map(m => m.displayName),
+                    skippedRows: 0,
+                    verification: null,
+                    countingChangedAt: diskCache.countingChangedAt || null,
+                };
+                if (this.deepStatsCache) this.deepStatsCache.health = this.lastHealth;
                 return false;
             }
 
@@ -497,6 +536,22 @@ export class UsageStatsService {
             const entryCounts = this.buildEntryCounts(cachedEntryCounts);
 
             const stats = aggregateFromPerConvo(merged, summaries.titleMap);
+
+            // Attached before cache.write, same as refreshFromStore, so the
+            // persisted copy carries it too. verification is hardcoded null:
+            // this path runs no verifier, so null correctly means "not run"
+            // rather than carrying forward a stale 'store'-mode result and
+            // implying it still applies to server-sourced data.
+            this.lastHealth = {
+                source: 'server',
+                conversations: mergedIds.length,
+                unreadable: 0,
+                unknownModels: stats.models.filter(m => isUnknownEnumName(m.displayName)).map(m => m.displayName),
+                skippedRows: 0,
+                verification: null,
+                countingChangedAt: diskCache.countingChangedAt || null,
+            };
+            stats.health = this.lastHealth;
 
             this.deepStatsCache = stats;
             this.currentPerConvo = merged;
@@ -840,6 +895,11 @@ export class UsageStatsService {
         const result = this.cache.loadSync(this.currentTitleMap);
         if (!result) return null;
         this.currentTitleMap = result.titleMap;
+        // Seed lastHealth from the persisted snapshot (see StatsCache.loadSync)
+        // so a range switch immediately after this cold-start load still shows
+        // it via getFilteredStats, instead of the card only appearing once a
+        // real refresh eventually completes in this session.
+        if (result.stats.health) this.lastHealth = result.stats.health;
         // NOTE: intentionally NOT setting this.deepStatsCache here.
         // The quotaManager stores this in lastUsageStats.
         // Keeping deepStatsCache empty allows fetchDeepStats() to proceed

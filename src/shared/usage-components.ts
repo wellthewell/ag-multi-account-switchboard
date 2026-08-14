@@ -940,12 +940,15 @@ export type UsageHealth = {
     unreadable: number;
     unknownModels: string[];
     /**
-     * Rows that were read but produced no entry — e.g. a gen_metadata row for
-     * a cancelled streaming request, which legitimately carries no usage.
-     * Nothing else distinguishes that normal case from a decode regression
-     * silently dropping rows; both are simply absent entries from outside.
-     * Surfacing the raw count at least gives a regression somewhere to become
-     * visible instead of vanishing unremarked into a smaller total.
+     * gen_metadata rows only (the canonical accounting table) that were read
+     * but produced no entry — e.g. a cancelled streaming request, which
+     * legitimately carries no usage. Does NOT cover steps rows: most steps
+     * are not model calls at all, so a combined count would be dominated by
+     * that normal noise rather than signal a regression (see
+     * readGenMetadata's doc comment). Nothing else distinguishes the normal
+     * case from a decode regression silently dropping rows; both are simply
+     * absent entries from outside. The card's label names this scope
+     * explicitly — do not relabel it as an unqualified total.
      */
     skippedRows: number;
     verification: { compared: number; diverged: number; at: string } | null;
@@ -978,7 +981,11 @@ export function renderHealthCard(h: UsageHealth): string {
         rows.push(`<div class="uh-row uh-warn"><span>Unrecognised models</span><span>${h.unknownModels.length} — excluded from cost</span></div>`);
     }
     if (h.skippedRows > 0) {
-        rows.push(`<div class="uh-row"><span>Skipped rows</span><span>${fmtNum(h.skippedRows)} — read, produced no entry</span></div>`);
+        // Labelled "metadata" explicitly: this counts gen_metadata rows only
+        // (the canonical accounting table), not steps rows — see
+        // readGenMetadata's doc comment for why. A reader relying on this as
+        // a trust signal needs to know its scope, not just its value.
+        rows.push(`<div class="uh-row"><span>Metadata rows skipped</span><span>${fmtNum(h.skippedRows)} — read, produced no entry</span></div>`);
     }
     if (h.verification) {
         const v = h.verification;

@@ -682,8 +682,12 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.ok(cardDiverged.includes('3'), 'the divergence count is shown');
 
         // Skipped-rows counter: a decode regression has somewhere to become visible.
+        // Review Important 3: the count only covers gen_metadata, not steps — the
+        // card's own text must say so, not just the source comment, or a reader
+        // relying on it as a trust signal has no way to know its scope.
         const cardSkipped = renderHealthCard({ ...baseHealth, skippedRows: 7 });
         assert.ok(cardSkipped.includes('7'), 'skipped rows are surfaced as a plain count');
+        assert.ok(/metadata/i.test(cardSkipped), 'the label names its scope (metadata rows) — a reader must not mistake this for a total across all read paths');
         const cardNoSkips = renderHealthCard({ ...baseHealth, skippedRows: 0 });
         assert.ok(!/skipped/i.test(cardNoSkips), 'a healthy zero skip count adds no noise to the card');
 
@@ -693,6 +697,132 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.ok(!/Aug\s*10/.test(cardNeverRun), 'no changeover note when countingChangedAt is null');
 
         console.log('health card: all checks passed');
+
+        // ─── health persists through an actual disk write + read round-trip ───
+        // Review Important 1: cache.write() was being called BEFORE stats.health
+        // was assigned in refreshFromStore, so JSON.stringify captured the object
+        // without it — .health was never persisted on any path. This proves the
+        // write/read layer itself preserves the field end to end (not just as an
+        // in-memory reference) when the caller assigns it in the now-corrected
+        // order — against a temp-redirected file, never the user's real cache.
+        {
+            const { StatsCache: StatsCacheRT } = require('./cache');
+            const osH2 = require('os'); const fsH2 = require('fs'); const pathH2 = require('path');
+            const tmpCacheRT = pathH2.join(osH2.tmpdir(), 'ag-switchboard-selfcheck-health-roundtrip.json');
+            try { fsH2.unlinkSync(tmpCacheRT); } catch { /* absent is fine */ }
+            class TestStatsCacheRT extends StatsCacheRT {
+                get filePath() { return tmpCacheRT; }
+            }
+            const testCacheRT = new TestStatsCacheRT();
+
+            const rtEntries = [mk('RT1', '2026-08-01T00:00:00.000Z')];
+            const roundTripStats = aggregateFromPerConvo({ rt: { entries: rtEntries } }, new Map());
+            // The now-fixed order: attach .health to the SAME object BEFORE
+            // calling write — exactly what refreshFromStore does after the fix.
+            roundTripStats.health = {
+                source: 'store', conversations: 1, unreadable: 0, unknownModels: [],
+                skippedRows: 0, verification: null, countingChangedAt: '2026-08-01T00:00:00.000Z',
+            };
+            testCacheRT.write({ rt: { entries: rtEntries } }, ['rt'], roundTripStats, new Map(), undefined, undefined, { rt: 1000 }, '2026-08-01T00:00:00.000Z');
+
+            const reloadedRT = testCacheRT.read();
+            assert.ok(reloadedRT, 'the temp-redirected cache reads back');
+            assert.ok(reloadedRT.stats.health, '.health survived an actual disk write + read round-trip, not just an in-memory reference');
+            assert.strictEqual(reloadedRT.stats.health.source, 'store', 'the persisted health snapshot is intact, not just present');
+            assert.strictEqual(reloadedRT.stats.health.conversations, 1, 'nested numeric fields inside .health survive JSON round-tripping too');
+
+            fsH2.unlinkSync(tmpCacheRT);
+            console.log('health disk round-trip: all checks passed');
+        }
+
+        // ─── health survives the dirty:0 refresh path — the common case ───
+        // Review Important 1's sharpest point: "a test that only exercises a
+        // full refresh will pass while the bug remains." Before this fix,
+        // refreshFromStore's dirty.length===0 early return skipped the
+        // health-snapshot code entirely — the exact path a quick reload or a
+        // second window takes on every ordinary poll where nothing changed.
+        // This drives the REAL UsageStatsService class end to end (not a
+        // stand-in: require('./index') and call its actual private method —
+        // TypeScript's `private` has no runtime effect), against a
+        // temp-redirected cache so the user's real ~/.gemini disk cache is
+        // never touched, and against this machine's real, on-disk conversation
+        // ledger read read-only so that dirty.length===0 is a genuine outcome
+        // of the dirty-check logic, not a simulated one.
+        {
+            const { UsageStatsService } = require('./index');
+            const { StatsCache: StatsCacheD0 } = require('./cache');
+            const osD0 = require('os'); const fsD0 = require('fs'); const pathD0 = require('path');
+
+            const conversationsD0 = listConversations();
+            if (conversationsD0.length === 0) {
+                console.log('health survives reload: SKIPPED — no conversations on this machine to build a realistic dirty:0 fixture from');
+            } else {
+                const tmpCacheD0 = pathD0.join(osD0.tmpdir(), 'ag-switchboard-selfcheck-health-dirty0.json');
+                try { fsD0.unlinkSync(tmpCacheD0); } catch { /* absent is fine */ }
+                class TestStatsCacheD0 extends StatsCacheD0 {
+                    get filePath() { return tmpCacheD0; }
+                }
+                const testCacheD0 = new TestStatsCacheD0();
+
+                // Seed a disk cache where every REAL conversation already has
+                // entries and a cachedMtime strictly newer than its actual
+                // on-disk mtime — guaranteeing isConvoDirty is false for all of
+                // them, i.e. dirty.length===0 on the very next refreshFromStore
+                // call. Read-only against the real conversation databases;
+                // every write in this test goes to tmpCacheD0.
+                const perConvoD0: Record<string, unknown> = {};
+                const mtimesD0: Record<string, number> = {};
+                for (const c of conversationsD0) {
+                    perConvoD0[c.id] = { entries: [mk(`seed-${c.id}`, '2020-01-01T00:00:00.000Z')] };
+                    mtimesD0[c.id] = c.mtimeMs + 1;
+                }
+                const seededStatsD0 = aggregateFromPerConvo(perConvoD0 as any, new Map());
+                testCacheD0.write(perConvoD0, Object.keys(perConvoD0), seededStatsD0, new Map(), undefined, undefined, mtimesD0, '2026-08-01T00:00:00.000Z');
+
+                const seededDiskCacheD0 = testCacheD0.read();
+                assert.ok(seededDiskCacheD0, 'the seeded temp cache reads back');
+                assert.strictEqual(seededDiskCacheD0.stats.health, undefined, 'sanity: the seed itself carries no health, so the health-present check below is not vacuous');
+
+                const svc = new UsageStatsService();
+                svc.cache = testCacheD0;
+                // Mimics fetchDeepStats' own sequencing: deepStatsCache is set
+                // from the disk read BEFORE refreshFromStore is ever called.
+                svc.deepStatsCache = seededDiskCacheD0.stats;
+
+                const fakeServerInfo = { port: 59999, csrfToken: 'fake', protocol: 'http' };
+                const result = await svc.refreshFromStore(fakeServerInfo, seededDiskCacheD0);
+                assert.strictEqual(result, null, 'every real conversation was seeded as already-fetched with a newer mtime — this must hit dirty.length===0, not a full refresh');
+                assert.ok(svc.lastHealth, 'the dirty:0 early-return path still populates lastHealth — this is the exact path the bug lived on');
+                assert.strictEqual(svc.lastHealth.source, 'store', 'source is store on this path');
+                assert.strictEqual(svc.lastHealth.verification, null, 'a fresh service instance has not verified anything yet, and the early-return path must not fabricate a result');
+                assert.strictEqual(svc.deepStatsCache.health, svc.lastHealth, 'the in-memory cached stats object — what fetchDeepStats actually returns to the panel — carries the same snapshot');
+
+                // Now force a REAL dirty pass (bump one real conversation's
+                // cached mtime back below its actual on-disk mtime) and drive
+                // the same real refreshFromStore through its full body,
+                // including its own cache.write call — not a stand-in. This is
+                // the ordering bug's actual site: cache.write serializes
+                // synchronously, so .health must already be on the object
+                // passed to it. serverInfo points at a closed local port —
+                // fetchTrajectorySummaries and the verifier both already
+                // tolerate an unreachable server by design (see their own
+                // try/catch), so this fails fast (~30ms observed) rather than
+                // hanging, and never reaches a real network.
+                const dirtyTarget = conversationsD0[0];
+                const dirtyDiskCacheD0 = testCacheD0.read();
+                dirtyDiskCacheD0.mtimes[dirtyTarget.id] = dirtyTarget.mtimeMs - 1;
+                const dirtyResult = await svc.refreshFromStore(fakeServerInfo, dirtyDiskCacheD0);
+                assert.ok(dirtyResult, 'the bumped conversation makes this a real, non-empty refresh, not another early return');
+                assert.ok(dirtyResult.health, 'a full pass carries health in memory');
+
+                const persistedD0 = testCacheD0.read();
+                assert.ok(persistedD0.stats.health, '.health survived an ACTUAL disk write triggered by the real orchestration — the exact ordering bug (cache.write called before .health was assigned) is fixed');
+                assert.strictEqual(persistedD0.stats.health.source, 'store', 'the persisted snapshot names its source');
+
+                fsD0.unlinkSync(tmpCacheD0);
+                console.log('health survives reload: all checks passed (dirty:0 path and a real persisted dirty pass)');
+            }
+        }
     })();
 }
 

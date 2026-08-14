@@ -142,7 +142,12 @@ export class StatsCache {
             titleMap = new Map(Object.entries(cache.titleMap));
         }
         // Re-aggregate from raw entries so semantic fixes apply to older caches.
+        // aggregateFromPerConvo never sets .health (it has no knowledge of the
+        // service's own per-refresh counters) — carry the persisted snapshot
+        // forward from the raw disk record instead of losing it on every
+        // synchronous cold-start load, which runs before any real refresh.
         const stats = aggregateFromPerConvo(cache.perConvo, titleMap);
+        if (cache.stats.health) stats.health = cache.stats.health;
 
         log.info(`loadSync: loaded ${cache.fetchedIds.length} conversations, titles: ${titleMap.size}`);
         return { stats, titleMap };

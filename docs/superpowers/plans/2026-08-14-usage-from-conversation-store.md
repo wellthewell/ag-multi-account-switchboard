@@ -1732,6 +1732,93 @@ figure came from the hardcoded keyword guesser. Fable 5 was priced as Sonnet
 at \$3/\$15 against a real \$10/\$50."
 ```
 
+### Task 12: The year grid keys its cells in UTC
+
+Found by Task 6's implementer, out of that task's scope, and verified by the controller.
+
+`renderDailyGrid` walks a cursor built from local dates (`new Date(selectedYear, 0, 1)`) but keys each cell with `cursor.toISOString().slice(0, 10)`. For any positive-offset timezone, local midnight is the previous day in UTC, so every cell is keyed one day earlier than the slot it occupies. `renderDayStrip` does not have this bug — it already uses `isoDay`.
+
+Demonstrated against the built code:
+
+```
+Aug 10 2026 is a Monday
+its cell lands in weekday row 1 (Tue) — expected row 0
+first cell of the 2026 grid is keyed "Dec 28" — the Monday-aligned start is Dec 29
+```
+
+The tooltip prints the key rather than the slot, which is why this has never looked obviously wrong: a Monday's usage renders in the Tuesday row with a correct-looking "Aug 10" label.
+
+Task 6 does not cause this — it is pre-existing — but Task 6 makes it systematic. Before Task 6 the daily buckets were keyed in UTC too, so the two wrongs partially cancelled; now the buckets are correct local dates and the grid alone is shifted.
+
+**Files:**
+- Modify: `src/shared/usage-components.ts` — `renderDailyGrid`
+- Modify: `src/services/usage/types.ts` — self-check
+
+**Interfaces:** none change.
+
+- [ ] **Step 1: Write the failing self-check**
+
+The assertion must check cell *position*, not the tooltip — the tooltip renders the key and so agrees with itself under either implementation.
+
+```typescript
+    // ─── the year grid must key cells by local date ───
+    const { renderDailyGrid: rdg } = require('../../shared/usage-components');
+    // 2026-08-10 is a Monday; in a Monday-first grid its cell belongs in row 0.
+    const gridHtml = rdg([{ date: '2026-08-10', input: 1000, output: 100, cache: 0, cacheWrite: 0, reasoning: 0, calls: 5 }], false, 2026, 0);
+    const gridCells = [...gridHtml.matchAll(/<div class="gh-cell gh-lvl-(\d)" data-tip="([^"]*)"><\/div>/g)];
+    const litIndex = gridCells.findIndex(c => c[1] !== '0');
+    assert.ok(litIndex >= 0, 'the bucket lights a cell at all');
+    assert.strictEqual(litIndex % 7, 0, 'a Monday bucket lands in the Monday row — cells are keyed by local date, not UTC');
+    console.log('daily grid keys: all checks passed');
+```
+
+- [ ] **Step 2: Run it and verify it fails**
+
+```bash
+npm run compile:extension && node out/services/usage/types.js --self-check
+```
+
+Expected, in a positive-offset timezone: `litIndex % 7` is 1, not 0. **In a zero or negative-offset timezone this assertion passes before the fix** — the bug is offset-dependent. If it passes at RED, re-run with `TZ=Asia/Bangkok` prefixed to force a positive offset, and note in the report that the check is offset-sensitive.
+
+- [ ] **Step 3: Key the cells by local date**
+
+In `renderDailyGrid`, replace the two UTC date derivations:
+
+```typescript
+    const today = isoDay(new Date());
+```
+
+replacing `const today = new Date().toISOString().slice(0, 10);`, and inside the cursor walk:
+
+```typescript
+        const iso = isoDay(cursor);
+```
+
+replacing `const iso = cursor.toISOString().slice(0, 10);`.
+
+`isoDay` is already imported in this file for `renderDayStrip`. Add a comment at the cursor line: the cursor is built from local dates, so it must be read back as one — `toISOString` re-interprets local midnight as the previous day for positive offsets and shifts every cell.
+
+- [ ] **Step 4: Run the self-check and verify it passes**
+
+```bash
+npm run compile:extension && node out/services/usage/types.js --self-check
+```
+
+Expected: `daily grid keys: all checks passed`, all earlier sections still passing.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/shared/usage-components.ts src/services/usage/types.ts
+git commit -m "fix(usage): key year-grid cells by local date
+
+The cursor is built from local dates but was read back with toISOString, so
+for positive-offset timezones every cell was keyed one day earlier than the
+slot it occupies — a Monday's usage rendered in the Tuesday row. The tooltip
+prints the key rather than the slot, which is why it looked correct.
+renderDayStrip already used isoDay; the year grid now matches."
+```
+
 ## Release
 
 After Task 10, bump to `3.3.0`, add a CHANGELOG entry covering all four reasons numbers change, package, and install. **Do not deploy without asking.**

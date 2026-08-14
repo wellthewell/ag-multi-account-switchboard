@@ -5,7 +5,7 @@
 
 import {
     TokenEntry, ConvoTokenData, MonthlyAccumulator, MetadataUsage,
-    PLACEHOLDER_MAP, OPUS_46_CUTOFF, PROVIDER_DISPLAY,
+    PLACEHOLDER_MAP, OPUS_46_CUTOFF, PROVIDER_DISPLAY, entryFingerprint,
 } from './types';
 import {
     DeepUsageStats, DailyBucket, HourlyBucket, ModelBucket,
@@ -15,6 +15,7 @@ import {
 import { matchPricing, usageTotal } from '../../shared/usage-components';
 import { HOURS_IN_DAY } from '../../shared/uiConstants';
 import { isGenericTitle, getTitleFromBrain, getTitleFromTranscript } from '../../shared/titleResolver';
+import { isoDay } from '../../shared/helpers';
 
 // ─── Model Display Name Resolution ───
 
@@ -92,7 +93,11 @@ function buildDailyBuckets(entries: Array<TokenEntry & { _caW: number; _reas: nu
     const map: Record<string, DailyBucket> = {};
     for (const e of entries) {
         if (e.ts.length < 10) continue;
-        const day = e.ts.slice(0, 10);
+        // Local date, not ts.slice(0,10). The stored timestamp is UTC, so a
+        // 01:39 session in a positive-offset zone would otherwise land on the
+        // previous day — and the activity grid buckets by local date, so the
+        // two would disagree. Weekday bucketing below is already local.
+        const day = isoDay(new Date(e.ts));
         if (!map[day]) map[day] = { date: day, input: 0, output: 0, cache: 0, cacheWrite: 0, reasoning: 0, calls: 0 };
         map[day].input += e.inp;
         map[day].output += e.out;
@@ -261,6 +266,10 @@ export function aggregateFromPerConvo(
 ): DeepUsageStats {
     const from = typeof dateFilter === 'string' ? dateFilter : (dateFilter.from || '');
     const to = typeof dateFilter === 'string' ? '' : (dateFilter.to || '');
+    // Dedupe across conversations, not within one. A sub-agent trajectory can
+    // record the same model call as its parent, and 7 response ids already
+    // span two conversations before sub-agent counting is enabled.
+    const seenGlobally = new Set<string>();
     // Collect ALL entries for monthly (unfiltered) and filtered entries for other buckets
     const allEntries: TokenEntry[] = [];
     const filteredEntries: Array<TokenEntry & { _caW: number; _reas: number; _displayName: string }> = [];
@@ -271,6 +280,15 @@ export function aggregateFromPerConvo(
         let cIn = 0, cOut = 0, cCache = 0, ccW = 0, cReas = 0, cCalls = 0;
 
         for (const e of data.entries) {
+            // Placement is load-bearing. allEntries feeds the monthly buckets and
+            // is populated before the date filter, so a check placed after the
+            // filter would leave monthly totals double-counted. And a duplicate
+            // outside the window would consume the fingerprint, suppressing the
+            // in-window copy. A duplicate is a duplicate regardless of window.
+            const fp = entryFingerprint(e);
+            if (seenGlobally.has(fp)) continue;
+            seenGlobally.add(fp);
+
             allEntries.push(e);
 
             // Date range filter: skip entries outside the selected window

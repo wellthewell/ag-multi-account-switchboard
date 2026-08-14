@@ -439,6 +439,34 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.ok(Array.isArray(listConversations()), 'listing never throws, even with roots missing');
         fsm.rmSync(tmpDir, { recursive: true, force: true });
         console.log('conversationStore: all checks passed');
+
+        // ─── local-day bucketing and global dedupe ───
+        const { aggregateFromPerConvo } = require('./aggregator');
+        const mk = (rid: string, ts: string) => ({ responseId: rid, source: 'metadata', inp: 100, out: 10, cache: 0, cacheWrite: 0, reasoning: 0, model: 'MODEL_PLACEHOLDER_M73', provider: 'API_PROVIDER_GOOGLE_GEMINI', ts });
+
+        // 01:30 local on the 5th. This runtime is UTC+7 (Indochina Time) — a positive
+        // offset makes EARLY-morning local hours the ones that cross the UTC boundary
+        // (01:30 local on the 5th is 18:30 UTC on the 4th), not late-evening ones
+        // (23:30 local on the 5th is still 16:30 UTC the same day, so it would pass
+        // under both the old and new bucketing and prove nothing). This mirrors the
+        // real 01:17/01:39 sessions that land on the previous day under UTC slicing.
+        const local = new Date(2026, 7, 5, 1, 30, 0);
+        const statsDay = aggregateFromPerConvo({ c1: { entries: [mk('R1', local.toISOString())] } }, new Map());
+        const { isoDay } = require('../../shared/helpers');
+        assert.strictEqual(statsDay.daily[0].date, isoDay(local), 'a day bucket uses the local date, not the UTC one');
+
+        // the same call recorded under two conversations must count once
+        const statsDup = aggregateFromPerConvo({
+            parent: { entries: [mk('SHARED', local.toISOString())] },
+            child:  { entries: [mk('SHARED', local.toISOString())] },
+        }, new Map());
+        assert.strictEqual(statsDup.totalCalls, 1, 'dedupe is global — 7 response ids already span two conversations');
+        assert.strictEqual(statsDup.totalInput, 100, 'a globally deduplicated call is counted once');
+        // The monthly buckets are built from allEntries, which is populated before the
+        // date filter — dedupe has to cover that path too, not just the filtered one.
+        const monthTotal = statsDup.monthly.reduce((n: number, m: { calls: number }) => n + m.calls, 0);
+        assert.strictEqual(monthTotal, 1, 'monthly buckets are deduplicated too');
+        console.log('aggregator: all checks passed');
     })();
 }
 

@@ -1413,6 +1413,8 @@ Numbers move for four independent reasons at once — recovered sessions, sub-ag
   - `renderHealthCard(h: UsageHealth): string`
   - `type UsageHealth = { source: 'store' | 'server'; conversations: number; unreadable: number; unknownModels: string[]; verification: { compared: number; diverged: number; at: string } | null; countingChangedAt: string | null }`
 
+**The card must distinguish three verification states, not two.** `verification: null` means the verifier has not run. `compared: 0` means it ran but had nothing to compare — every sampled conversation was one the language server could not serve, which is the normal condition this whole plan exists to work around. Only `compared > 0, diverged: 0` means anything was actually checked. Rendering the middle case as "clean" manufactures exactly the false confidence the verifier exists to prevent, so say "not verified this run" for it and claim clean only when a real comparison happened. Task 9's review raised the same point against the verifier's own log line, which says "clean across 0 calls" in that case.
+
 - [ ] **Step 1: Write the failing self-check**
 
 ```typescript

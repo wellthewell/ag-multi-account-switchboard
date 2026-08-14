@@ -251,21 +251,57 @@ if (require.main === module && process.argv.includes('--self-check')) {
         console.log('gridMode: all checks passed');
 
         // ─── dbAllAt: multi-row reads from an arbitrary database ───
-        const { dbAllAt } = require('../../shared/db');
+        const { dbAllAt, cliAll } = require('../../shared/db');
         const os = require('os'); const fsm = require('fs'); const pathm = require('path');
+        const cp = require('child_process');
+
         const tmpDb = pathm.join(os.tmpdir(), 'ag-switchboard-selfcheck.db');
         try { fsm.unlinkSync(tmpDb); } catch { /* absent is fine */ }
-        require('child_process').execSync(
-            `sqlite3 "${tmpDb}" "create table t(a,b); insert into t values(1,'x'),(2,'y'),(3,'z');"`,
+
+        // Create fixture with multi-character values including spaces, and a blob column
+        cp.execSync(
+            `sqlite3 "${tmpDb}" "create table t(id,name,blob_col); ` +
+            `insert into t values(1,'Alice Smith',X'DEADBEEF'),(2,'Bob Johnson',X'CAFEBABE'),(3,'Charlie 123',X'0123456789ABCDEF');"`,
         );
-        const rows = await dbAllAt(tmpDb, 'select a, b from t order by a');
-        assert.strictEqual(rows.length, 3, 'dbAllAt returns every row, not just the first');
-        assert.strictEqual(rows[0][0], '1', 'first column of first row');
-        assert.strictEqual(rows[2][1], 'z', 'second column of last row');
+
+        // Test dbAllAt with both backends returning identical results
+        const rows = await dbAllAt(tmpDb, 'select id, name, quote(blob_col) as blob_col from t order by id');
+        assert.strictEqual(rows.length, 3, 'dbAllAt returns all 3 rows');
+        assert.strictEqual(rows[0].length, 3, 'each row has 3 columns');
+
+        // Verify multi-character text columns round-trip
+        assert.strictEqual(rows[0][1], 'Alice Smith', 'multi-char text with space preserved');
+        assert.strictEqual(rows[1][1], 'Bob Johnson', 'second row multi-char text preserved');
+
+        // Verify blob columns come back as X'..' hex
+        assert.match(rows[0][2], /^X'[0-9A-F]+'$/, 'blob column is X\'...\' hex format');
+        assert.strictEqual(rows[0][2].toUpperCase(), "X'DEADBEEF'", 'blob column value correct');
+        assert.strictEqual(rows[2][2].toUpperCase(), "X'0123456789ABCDEF'", 'longer blob preserves all hex digits');
+
+        // Test missing database
         assert.strictEqual(await dbAllAt(pathm.join(os.tmpdir(), 'does-not-exist.db'), 'select 1'), null,
             'missing database resolves null rather than throwing');
+
+        // Force test of CLI backend directly (dbAllAt prefers native; without this test, CLI could be broken and undetected)
+        let cliOk = false;
+        try {
+            cp.execSync('sqlite3 --version', { timeout: 1000, stdio: 'pipe' });
+            const cliRows = await cliAll(tmpDb, 'select id, name, quote(blob_col) as blob_col from t order by id');
+            assert.strictEqual(cliRows.length, 3, 'cliAll returns all 3 rows');
+            assert.strictEqual(cliRows[0][1], 'Alice Smith', 'cliAll: multi-char text preserved');
+            assert.match(cliRows[0][2], /^X'[0-9A-F]+'$/, 'cliAll: blob column is X\'...\' hex format');
+            assert.strictEqual(cliRows[0][2].toUpperCase(), "X'DEADBEEF'", 'cliAll: blob value matches native');
+            cliOk = true;
+        } catch (e: any) {
+            if (e.message && e.message.includes('ENOENT')) {
+                console.log('  (sqlite3 CLI not on PATH; CLI backend tests skipped)');
+            } else {
+                throw e;
+            }
+        }
+
         fsm.unlinkSync(tmpDb);
-        console.log('dbAllAt: all checks passed');
+        console.log('dbAllAt: all checks passed' + (cliOk ? ' (both backends tested)' : ' (native backend only)'));
     })();
 }
 

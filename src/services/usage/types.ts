@@ -330,6 +330,35 @@ if (require.main === module && process.argv.includes('--self-check')) {
         const unpriced = calculateTotalCost([{ displayName: unknownModelName, input: 1e6, output: 0, cache: 0, cacheWrite: 0, reasoning: 0 }]);
         assert.strictEqual(unpriced, 0, 'an unknown model contributes no cost');
         console.log('enumMap: all checks passed');
+
+        // ─── usageReader: decode one gen_metadata blob ───
+        const { encodeVarintField, encodeMessage, encodeString } = require('../../shared/protobuf');
+        const { decodeGenMetadataBlob } = require('./store/usageReader');
+
+        const usage = Buffer.concat([
+            encodeVarintField(1, 1073),      // model enum -> MODEL_PLACEHOLDER_M73
+            encodeVarintField(2, 15027),     // input
+            encodeVarintField(3, 126),       // output
+            encodeVarintField(5, 12232),     // cache read
+            encodeVarintField(6, 24),        // provider -> Gemini
+            encodeVarintField(9, 401),       // reasoning
+            encodeString(11, 'eXZkatT5D8ONjuMPy9KhkA0'),  // responseId
+        ]);
+        const stamp = encodeMessage(9, encodeMessage(4, encodeVarintField(1, 1784968824)));
+        const blob = encodeMessage(1, Buffer.concat([encodeMessage(4, usage), stamp]));
+
+        const entry = decodeGenMetadataBlob(blob);
+        assert.strictEqual(entry.inp, 15027, 'input tokens');
+        assert.strictEqual(entry.out, 126, 'output tokens');
+        assert.strictEqual(entry.cache, 12232, 'cache read tokens');
+        assert.strictEqual(entry.reasoning, 401, 'reasoning tokens — priced, on 72% of entries');
+        assert.strictEqual(entry.model, 'MODEL_PLACEHOLDER_M73', 'model resolved from enum');
+        assert.strictEqual(entry.provider, 'API_PROVIDER_GOOGLE_GEMINI', 'provider resolved from enum');
+        assert.strictEqual(entry.responseId, 'eXZkatT5D8ONjuMPy9KhkA0', 'response id');
+        assert.strictEqual(entry.source, 'metadata', 'source tag');
+        assert.strictEqual(entry.ts, new Date(1784968824000).toISOString(), 'timestamp from unix seconds');
+        assert.strictEqual(decodeGenMetadataBlob(Buffer.from([0x00])), null, 'a malformed blob yields null, never a zero entry');
+        console.log('usageReader: all checks passed');
     })();
 }
 

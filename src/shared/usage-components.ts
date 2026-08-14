@@ -484,6 +484,9 @@ export function calculateTotalCost(models: ModelBucket[]): number {
     if (!models || models.length === 0) return 0;
     let total = 0;
     for (const m of models) {
+        // An unrecognised model has no rate. Pricing it at zero would understate
+        // cost silently; the health card reports these instead.
+        if (m.displayName && m.displayName.startsWith('MODEL_UNKNOWN_')) continue;
         const p = matchPricing(m.displayName);
         total += (m.input / 1e6) * p.input
             + ((m.cache || 0) / 1e6) * p.cache

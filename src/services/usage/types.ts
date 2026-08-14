@@ -302,6 +302,28 @@ if (require.main === module && process.argv.includes('--self-check')) {
             fsm.unlinkSync(tmpDb);
             console.log('dbAllAt: all checks passed (both backends tested)');
         }
+
+        // ─── enum map ───
+        const { modelNameFromEnum, providerNameFromEnum, isUnknownEnumName } =
+            require('./store/enumMap');
+        assert.strictEqual(modelNameFromEnum(1073), 'MODEL_PLACEHOLDER_M73', '1000 + N rule');
+        assert.strictEqual(modelNameFromEnum(1026), 'MODEL_PLACEHOLDER_M26', '1000 + N rule, second sample');
+        assert.strictEqual(modelNameFromEnum(4242), 'MODEL_UNKNOWN_4242', 'unknown enum is named, not guessed');
+        assert.ok(isUnknownEnumName('MODEL_UNKNOWN_4242'), 'unknown names are detectable');
+        assert.ok(!isUnknownEnumName('MODEL_PLACEHOLDER_M73'), 'known names are not flagged');
+        assert.strictEqual(modelNameFromEnum(4242, { 4242: 'MODEL_CLAUDE_9_OPUS' }), 'MODEL_CLAUDE_9_OPUS',
+            'a learned pair beats the unknown fallback');
+        assert.strictEqual(providerNameFromEnum(24), 'API_PROVIDER_GOOGLE_GEMINI', 'seeded provider');
+        assert.strictEqual(providerNameFromEnum(26), 'API_PROVIDER_ANTHROPIC_VERTEX', 'seeded provider');
+        assert.strictEqual(providerNameFromEnum(99), 'API_PROVIDER_UNKNOWN_99', 'unknown provider is named');
+
+        // unknown models must not be priced
+        const { calculateTotalCost } = require('../../shared/usage-components');
+        const priced = calculateTotalCost([{ displayName: 'Claude Opus 4.8', input: 1e6, output: 0, cache: 0, cacheWrite: 0, reasoning: 0 }]);
+        assert.ok(priced > 0, 'a known model is priced');
+        const unpriced = calculateTotalCost([{ displayName: 'MODEL_UNKNOWN_4242', input: 1e6, output: 0, cache: 0, cacheWrite: 0, reasoning: 0 }]);
+        assert.strictEqual(unpriced, 0, 'an unknown model contributes no cost');
+        console.log('enumMap: all checks passed');
     })();
 }
 

@@ -575,25 +575,44 @@ Append to `src/services/usage/store/usageReader.ts`:
 import { entryFingerprint, mergePreferredEntry } from '../types';
 
 /**
- * Steps rows carry the same usage submessage nested one level deeper, under
- * the step's metadata blob. step_payload is never selected: it holds
- * conversation content and is the bulk of the file.
+ * A steps row carries the same usage submessage as gen_metadata, but reached by
+ * a different path — measured across 3,527 rows in 34 conversations:
+ *
+ *     gen_metadata:  usage at 1 -> 4     timestamp at 1 -> 9 -> 4 -> 1
+ *     steps:         usage at 9          timestamp at 1 -> 1
+ *
+ * 1,644 of those rows carry usage at field 9 and every row has a timestamp at
+ * 1.1. The submessage's own field numbering is identical in both, which is why
+ * the two share one decoder for it.
+ *
+ * The usage message is mirrored at 28.2 in the same blob; only field 9 is read,
+ * so the duplicate never enters the list.
+ *
+ * step_payload is never selected: it holds conversation content and is the bulk
+ * of the file.
  */
 export async function readStepsUsage(dbPath: string, learned?: LearnedEnums): Promise<TokenEntry[] | null> {
     const rows = await dbAllAt(dbPath, 'select quote(metadata) from steps where metadata is not null order by idx');
-    if (rows === null) { log.warn(`steps unreadable: ${dbPath}`); return null; }
+    if (rows === null) {
+        // Lazy + guarded: see readGenMetadata.
+        try { require('../../../utils/logger').createLogger('UsageReader').warn(`steps unreadable: ${dbPath}`); }
+        catch { /* outside the extension host — the caller reports the failure count */ }
+        return null;
+    }
     const entries: TokenEntry[] = [];
     for (const r of rows) {
         const cell = r[0];
         if (!cell || !cell.startsWith("X'")) continue;
         const buf = Buffer.from(cell.slice(2, -1), 'hex');
-        // Try the blob directly, then each length-delimited child: the usage
-        // submessage sits at a different depth depending on step type.
-        const candidates: Buffer[] = [buf, ...readFields(buf).filter(f => f.wireType === 2 && f.bytes).map(f => f.bytes!)];
-        for (const c of candidates) {
-            const e = decodeGenMetadataBlob(c, learned);
-            if (e) { entries.push({ ...e, source: 'steps' }); break; }
-        }
+
+        const usage = sub(buf, 9);
+        if (!usage || usage.length === 0) continue;          // a step with no model call
+        const stamp = sub(buf, 1);
+        const seconds = stamp ? (readFields(stamp).find(f => f.field === 1)?.varint ?? 0) : 0;
+        if (!seconds) continue;
+
+        const e = decodeUsageSubmessage(usage, seconds, learned);
+        if (e) entries.push({ ...e, source: 'steps' });
     }
     return entries;
 }

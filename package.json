@@ -143,6 +143,12 @@
           "type": "boolean",
           "default": false,
           "description": "Enable verbose file logging to /tmp/ag-ctx-diag.log for troubleshooting. Restart not required."
+        },
+        "ag-switchboard.usageSource": {
+          "type": "string",
+          "enum": ["auto", "server"],
+          "default": "auto",
+          "description": "Where token usage is read from. 'auto' reads the conversation store directly. 'server' restores the previous language-server path, which cannot see sessions created after it started. Temporary; will be removed once the store path has run a release without divergence."
         }
       }
     }

@@ -26,12 +26,14 @@ import {
     entryFingerprint, mergePreferredEntry, isConvoDirty,
 } from './types';
 import { aggregateFromPerConvo, extractTokens } from './aggregator';
-import { StatsCache } from './cache';
+import { StatsCache, mergeIntoLedger } from './cache';
 import { ProcessLock } from './processLock';
 import { getGlobalIndexData } from '../../shared/titleResolver';
 import { BRAIN_DIR, CONVERSATIONS_DIR } from '../../shared/agPaths';
 import { gridMode } from '../../shared/helpers';
 import { concurrentPool } from './pool';
+import { listConversations } from './store/conversationStore';
+import { readConversationUsage } from './store/usageReader';
 
 const log = createLogger('UsageStats');
 
@@ -84,10 +86,15 @@ export class UsageStatsService {
             }
             try {
 
-                const updated = await this.incrementalRefresh(serverInfo, diskCache).catch((e: any) => {
-                    log.warn('fetchDeepStats: incrementalRefresh threw:', e?.message);
-                    return false;
-                });
+                const updated = this.useServerSource()
+                    ? await this.incrementalRefresh(serverInfo, diskCache).catch((e: any) => {
+                        log.warn('fetchDeepStats: incrementalRefresh threw:', e?.message);
+                        return false;
+                    })
+                    : !!(await this.refreshFromStore(diskCache).catch((e: any) => {
+                        log.warn('fetchDeepStats: refreshFromStore threw:', e?.message);
+                        return null;
+                    }));
 
                 if (updated && onBackfillComplete) onBackfillComplete(this.deepStatsCache!);
             } finally {
@@ -105,10 +112,27 @@ export class UsageStatsService {
             return null;
         }
         try {
-            return await this.twoPhaseFullFetch(serverInfo, onBackfillComplete, onProgress);
+            return this.useServerSource()
+                ? await this.twoPhaseFullFetch(serverInfo, onBackfillComplete, onProgress)
+                : await this.refreshFromStore(null);
         } finally {
             this.processLock.release();
         }
+    }
+
+    /**
+     * Whether usage should come from the language server instead of the
+     * conversation store. Store-read ('auto') is the default; 'server' is a
+     * temporary rollback for the case where the store path diverges from the
+     * server's numbers, kept only until the store path has run a release
+     * without divergence. Defaults to false (store) if vscode is unavailable,
+     * e.g. when this module is required by a plain-node script.
+     */
+    private useServerSource(): boolean {
+        try {
+            const vscode = require('vscode');
+            return vscode.workspace.getConfiguration('ag-switchboard').get('usageSource') === 'server';
+        } catch { return false; }
     }
 
     /**
@@ -198,7 +222,72 @@ export class UsageStatsService {
         }
     }
 
+    /**
+     * Refresh usage from the conversation store.
+     *
+     * Replaces the language-server fetch as the data path. The server only
+     * serves conversations that existed when it started, so anything the agy
+     * command-line client creates afterwards is permanently invisible to it.
+     */
+    private async refreshFromStore(diskCache: DiskCacheData | null): Promise<DeepUsageStats | null> {
+        const conversations = listConversations();
+        if (conversations.length === 0) {
+            log.warn('refreshFromStore: no conversations found in any install root');
+            return this.deepStatsCache;
+        }
 
+        const cachedMtimes = diskCache?.mtimes || {};
+        const cachedPerConvo = diskCache?.perConvo || {};
+        const presentIds = new Set(conversations.map(c => c.id));
+
+        // A conversation sitting at zero entries is always retried, whatever
+        // its recorded timestamp says — that is what recovers conversations
+        // stranded by the previous server-only path.
+        const dirty = conversations.filter(c => {
+            const hasEntries = !!cachedPerConvo[c.id]?.entries?.length;
+            if (!hasEntries) return true;
+            return c.mtimeMs > (cachedMtimes[c.id] ?? 0);
+        });
+
+        log.info(`refreshFromStore: ${dirty.length} of ${conversations.length} conversations to read`);
+
+        const fresh: Record<string, ConvoTokenData> = {};
+        const mtimes: Record<string, number> = { ...cachedMtimes };
+        let failed = 0;
+        for (const c of dirty) {
+            // Freshness comes from what listConversations() already captured, not a
+            // fresh stat taken after the read. A session that writes mid-read would
+            // otherwise end up with a newer mtime recorded than the data actually
+            // captured, and that gap would never be picked up on a later pass.
+            const before = c.mtimeMs;
+            const entries = await readConversationUsage(c.dbPath);
+            // null means the read failed outright — never "no usage". Recording a
+            // failed read's mtime would freeze this conversation forever: the dirty
+            // check above only retries on a zero-entry conversation or an mtime
+            // advance, and a recorded mtime satisfies both. Skipping leaves the old
+            // mtime in place so the next pass retries it.
+            if (entries === null) { failed++; continue; }
+            fresh[c.id] = { entries };
+            mtimes[c.id] = before;
+        }
+        if (failed > 0) log.warn(`refreshFromStore: ${failed} conversations unreadable this pass; will retry`);
+
+        // fresh is built only from ids in `dirty`, which is filtered from `conversations`
+        // (i.e. listConversations()'s output) — so its keys are always a subset of
+        // presentIds. mergeIntoLedger trusts that invariant rather than checking it.
+        const merged = mergeIntoLedger(cachedPerConvo, fresh, presentIds);
+        const titleMap = this.currentTitleMap.size > 0
+            ? this.currentTitleMap
+            : new Map<string, string>(Object.entries(diskCache?.titleMap || {}));
+        const stats = aggregateFromPerConvo(merged, titleMap);
+
+        this.deepStatsCache = stats;
+        this.currentPerConvo = merged;
+        this.cache.write(merged, [...presentIds, ...Object.keys(merged)], stats, titleMap,
+            this.currentStepCounts, diskCache?.entryCounts, mtimes);
+        log.info(`refreshFromStore: complete — ${stats.totalCalls} calls across ${Object.keys(merged).length} conversations`);
+        return stats;
+    }
 
     /**
      * Partition conversation IDs into hot (mtime > cutoff) and cold.

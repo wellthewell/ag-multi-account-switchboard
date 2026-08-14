@@ -1798,7 +1798,26 @@ replacing `const iso = cursor.toISOString().slice(0, 10);`.
 
 `isoDay` is already imported in this file for `renderDayStrip`. Add a comment at the cursor line: the cursor is built from local dates, so it must be read back as one — `toISOString` re-interprets local midnight as the previous day for positive offsets and shifts every cell.
 
-- [ ] **Step 4: Run the self-check and verify it passes**
+- [ ] **Step 4: Make both timezone-sensitive assertions discriminate unconditionally**
+
+Task 6's review raised this against its day-bucketing fixture, and the same weakness applies to the assertion added above: **both only fail against the unfixed code on a machine with a positive UTC offset.** On a UTC or negative-offset machine — a default CI runner, for instance — they pass whether or not the fix is present. That is the fixture-blindness failure this plan has now hit five times, in a form that would only appear on someone else's machine.
+
+Neither production fix is timezone-dependent; `isoDay` is correct under any offset. Only the tests are.
+
+Make both assertions self-guarding rather than relying on the ambient timezone. In `src/services/usage/types.ts`, at the day-bucketing assertion added by Task 6 (the `new Date(2026, 7, 5, 1, 30, 0)` fixture) and at the grid assertion above, assert the precondition explicitly before asserting the behaviour:
+
+```typescript
+    // These two assertions only tell a correct implementation from a UTC one when
+    // local midnight and UTC midnight fall on different dates. State that as a
+    // requirement rather than letting the check quietly pass under a UTC runner.
+    const offsetMinutes = -new Date().getTimezoneOffset();
+    assert.ok(offsetMinutes > 0,
+        `local-date assertions need a positive UTC offset to discriminate; this runtime is UTC${offsetMinutes >= 0 ? '+' : ''}${offsetMinutes / 60}. Re-run with TZ=Asia/Bangkok.`);
+```
+
+A failing precondition is the correct outcome: it says "this check could not be performed here" instead of reporting a pass it did not earn.
+
+- [ ] **Step 5: Run the self-check and verify it passes**
 
 ```bash
 npm run compile:extension && node out/services/usage/types.js --self-check
@@ -1806,7 +1825,15 @@ npm run compile:extension && node out/services/usage/types.js --self-check
 
 Expected: `daily grid keys: all checks passed`, all earlier sections still passing.
 
-- [ ] **Step 5: Commit**
+Then confirm the guard itself works — run once forcing a zero offset and check that it fails loudly rather than passing:
+
+```bash
+TZ=UTC node out/services/usage/types.js --self-check
+```
+
+Expected: the precondition assertion fails with the "needs a positive UTC offset" message. Put that output in your report.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/shared/usage-components.ts src/services/usage/types.ts

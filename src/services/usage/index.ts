@@ -34,6 +34,7 @@ import { gridMode } from '../../shared/helpers';
 import { concurrentPool } from './pool';
 import { listConversations } from './store/conversationStore';
 import { readConversationUsage } from './store/usageReader';
+import { verifyConversation } from './store/verifier';
 
 const log = createLogger('UsageStats');
 
@@ -49,6 +50,9 @@ export class UsageStatsService {
 
     /** Raw (pre-dedup) meta/steps counts per conversation — for correct offset-based delta */
     private rawFetchCounts: Record<string, { meta: number; steps: number }> = {};
+
+    /** Surfaced by the health card. */
+    public lastVerification: { compared: number; diverged: number; at: string } | null = null;
 
     private readonly cache = new StatsCache();
     private readonly processLock = new ProcessLock();
@@ -91,7 +95,7 @@ export class UsageStatsService {
                         log.warn('fetchDeepStats: incrementalRefresh threw:', e?.message);
                         return false;
                     })
-                    : !!(await this.refreshFromStore(diskCache).catch((e: any) => {
+                    : !!(await this.refreshFromStore(serverInfo, diskCache).catch((e: any) => {
                         log.warn('fetchDeepStats: refreshFromStore threw:', e?.message);
                         return null;
                     }));
@@ -114,7 +118,7 @@ export class UsageStatsService {
         try {
             return this.useServerSource()
                 ? await this.twoPhaseFullFetch(serverInfo, onBackfillComplete, onProgress)
-                : await this.refreshFromStore(null);
+                : await this.refreshFromStore(serverInfo, null);
         } finally {
             this.processLock.release();
         }
@@ -229,7 +233,7 @@ export class UsageStatsService {
      * serves conversations that existed when it started, so anything the agy
      * command-line client creates afterwards is permanently invisible to it.
      */
-    private async refreshFromStore(diskCache: DiskCacheData | null): Promise<DeepUsageStats | null> {
+    private async refreshFromStore(serverInfo: ServerInfo, diskCache: DiskCacheData | null): Promise<DeepUsageStats | null> {
         const conversations = listConversations();
         if (conversations.length === 0) {
             log.warn('refreshFromStore: no conversations found in any install root');
@@ -250,6 +254,14 @@ export class UsageStatsService {
         });
 
         log.info(`refreshFromStore: ${dirty.length} of ${conversations.length} conversations to read`);
+
+        // Nothing changed since the last pass. incrementalRefresh returns false in
+        // the same situation specifically to suppress a redundant onBackfillComplete
+        // — mirror that here instead of re-aggregating and rewriting an identical
+        // cache. this.deepStatsCache is left exactly as the caller already set it.
+        if (dirty.length === 0) {
+            return null;
+        }
 
         const fresh: Record<string, ConvoTokenData> = {};
         const mtimes: Record<string, number> = { ...cachedMtimes };
@@ -276,6 +288,16 @@ export class UsageStatsService {
         // (i.e. listConversations()'s output) — so its keys are always a subset of
         // presentIds. mergeIntoLedger trusts that invariant rather than checking it.
         const merged = mergeIntoLedger(cachedPerConvo, fresh, presentIds);
+
+        // The server still owns titles; only usage moved to the store. It tolerates
+        // being unreachable, so this cannot reintroduce the dependency the store
+        // path exists to remove.
+        const summaries = await this.fetchTrajectorySummaries(serverInfo).catch(() => null);
+        if (summaries) {
+            this.currentTitleMap = summaries.titleMap;
+            this.currentStepCounts = summaries.stepCounts;
+        }
+
         const titleMap = this.currentTitleMap.size > 0
             ? this.currentTitleMap
             : new Map<string, string>(Object.entries(diskCache?.titleMap || {}));
@@ -283,9 +305,22 @@ export class UsageStatsService {
 
         this.deepStatsCache = stats;
         this.currentPerConvo = merged;
-        this.cache.write(merged, [...presentIds, ...Object.keys(merged)], stats, titleMap,
+        this.cache.write(merged, Object.keys(merged), stats, titleMap,
             this.currentStepCounts, diskCache?.entryCounts, mtimes);
         log.info(`refreshFromStore: complete — ${stats.totalCalls} calls across ${Object.keys(merged).length} conversations`);
+
+        // Non-blocking: compare a few conversations the server can still serve.
+        void (async () => {
+            let compared = 0, diverged = 0;
+            for (const c of conversations.slice(0, 5)) {
+                const r = await verifyConversation(serverInfo, c.id, c.dbPath).catch(() => null);
+                if (!r) continue;
+                compared += r.compared; diverged += r.divergences.length;
+            }
+            this.lastVerification = { compared, diverged, at: new Date().toISOString() };
+            if (diverged > 0) log.warn(`verifier: ${diverged} divergences across ${compared} compared calls`);
+        })();
+
         return stats;
     }
 

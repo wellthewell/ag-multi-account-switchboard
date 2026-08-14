@@ -64,7 +64,13 @@ export const LS_PROCESS_GREP = isMac
  * Tried in order: vscode.env.appRoot (injected at runtime), then platform defaults.
  */
 const AG_APP_ROOT_CANDIDATES: string[] = isMac
-    ? ['/Applications/Antigravity.app/Contents/Resources/app']
+    ? [
+        // The IDE build ships under its own name; the plain one may not exist, or
+        // may exist without the native module. Both are listed because either can
+        // be the installed product, and getSqlite3Module tries them in order.
+        '/Applications/Antigravity IDE.app/Contents/Resources/app',
+        '/Applications/Antigravity.app/Contents/Resources/app',
+      ]
     : isLinux
         ? [
             '/opt/antigravity/resources/app',

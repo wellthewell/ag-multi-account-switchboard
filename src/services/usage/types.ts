@@ -436,6 +436,15 @@ if (require.main === module && process.argv.includes('--self-check')) {
         fsm.utimesSync(dbFile + '-wal', new Date(9000 * 1000), new Date(9000 * 1000));
         assert.strictEqual(conversationFreshness(dbFile, brainDir), 9000 * 1000,
             'the write-ahead log is the freshest signal — the .db timestamp lags up to a checkpoint');
+
+        // A -shm newer than everything else must NOT count: readers create it, so
+        // counting it would make every conversation look dirty after its first read
+        // and turn incremental refresh into a permanent full rescan.
+        fsm.writeFileSync(dbFile + '-shm', 's');
+        fsm.utimesSync(dbFile + '-shm', new Date(99000000), new Date(99000000));
+        assert.strictEqual(conversationFreshness(dbFile, brainDir), 9000 * 1000,
+            'a -shm newer than the -wal is ignored — readers create it, so it is not a write signal');
+
         assert.ok(Array.isArray(listConversations()), 'listing never throws, even with roots missing');
         fsm.rmSync(tmpDir, { recursive: true, force: true });
         console.log('conversationStore: all checks passed');

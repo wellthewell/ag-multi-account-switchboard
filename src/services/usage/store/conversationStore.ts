@@ -40,10 +40,15 @@ function realRoots(): { conversations: string; brain: string }[] {
  * first and only reach the .db at a checkpoint — a call was observed recorded
  * while the .db timestamp was 92 seconds stale, and the brain directory lagged
  * seven minutes. Taking the maximum is what makes live sessions detectable.
+ *
+ * Readers create the -shm sidecar, so it is not a write signal — including it
+ * makes every conversation permanently dirty after its first read, turning
+ * incremental refresh into a permanent full rescan. The -wal signal survives
+ * because writers append to it; readers do not touch it.
  */
 export function conversationFreshness(dbPath: string, brainPath: string): number {
     let newest = 0;
-    for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, brainPath]) {
+    for (const p of [dbPath, `${dbPath}-wal`, brainPath]) {
         try {
             const m = fs.statSync(p).mtimeMs;
             if (m > newest) newest = m;

@@ -1882,6 +1882,123 @@ prints the key rather than the slot, which is why it looked correct.
 renderDayStrip already used isoDay; the year grid now matches."
 ```
 
+### Task 13: Make incremental refresh actually incremental
+
+Two defects found during Task 8, both verified by the controller against this machine. Neither threatens correctness — repeated reads are idempotent because entries dedupe by fingerprint — but together they mean the extension does a full rescan on every poll, using the slowest available backend. The spec's fourth goal is that the extension gets **lighter**, not heavier; as shipped it is heavier.
+
+**Defect A — the native database module never loads.** `AG_APP_ROOT_CANDIDATES` in `src/shared/agPaths.ts` lists exactly one macOS path, `/Applications/Antigravity.app/Contents/Resources/app`. Verified: that directory has no `node_modules/@vscode/sqlite3`. The module actually lives under `/Applications/Antigravity IDE.app/...`. And `db.ts` calls `getSqlite3Module()` with no `appRoot`, so the candidate list is the only source. Every read therefore falls back to spawning the `sqlite3` command-line tool — roughly 9 ms per call against under 1 ms in-process, and the spawn cost dominates: reading 5 rows measured 8.9 ms against 9.6 ms for 54.
+
+This predates the plan and affects the extension's existing `state.vscdb` reads too, not only the new store reads.
+
+**Defect B — the freshness check invalidates itself.** `conversationFreshness` takes the newest of `.db`, `.db-wal`, `.db-shm` and the brain directory. Two probes established what actually happens:
+
+```
+a conversation WITH sidecars, after a read-only query
+  .db, -wal, -shm mtimes all unchanged
+
+a conversation WITHOUT sidecars, after a read-only query
+  .db mtime unchanged
+  sidecars created  ← the read gives it a brand-new timestamp
+```
+
+So the first read of any checkpointed conversation creates a `-shm` stamped *now*, and that conversation then looks dirty on every subsequent pass, forever. Since `refreshFromStore` re-reads anything whose freshness exceeds the recorded value, the incremental path degenerates into a permanent full rescan.
+
+Readers do not touch `-wal` — the first probe proves that — so dropping `-shm` from the freshness set keeps write detection intact and removes the self-invalidation.
+
+**Files:**
+- Modify: `src/shared/agPaths.ts` — add the IDE application to the macOS candidates
+- Modify: `src/services/usage/store/conversationStore.ts` — drop `-shm` from `conversationFreshness`
+- Modify: `src/services/usage/types.ts` — self-check
+
+**Interfaces:** none change.
+
+- [ ] **Step 1: Write the failing self-check**
+
+The existing freshness assertion sets a `-wal` newer than the `.db` and asserts the newer value wins. Extend it so it also proves `-shm` is *ignored*:
+
+```typescript
+    // A -shm newer than everything else must NOT count: readers create it, so
+    // counting it would make every conversation look dirty after its first read
+    // and turn incremental refresh into a permanent full rescan.
+    fsm.writeFileSync(dbFile + '-shm', 's');
+    fsm.utimesSync(dbFile + '-shm', new Date(99000000), new Date(99000000));
+    assert.strictEqual(conversationFreshness(dbFile, brainDir), 9000 * 1000,
+        'a -shm newer than the -wal is ignored — readers create it, so it is not a write signal');
+```
+
+Placed after the existing assertion, this fails while `-shm` is still in the set, because freshness would report 99,000,000.
+
+- [ ] **Step 2: Run it and verify it fails**
+
+```bash
+npm run compile:extension && node out/services/usage/types.js --self-check
+```
+
+Expected: the new assertion fails with 99000000 against the expected 9000000.
+
+- [ ] **Step 3: Drop `-shm` from the freshness set**
+
+In `conversationFreshness`, remove `` `${dbPath}-shm` `` from the list, leaving `.db`, `-wal` and the brain directory. Replace the existing comment's mention of `-shm` with the reason it is excluded: a reader creates it, so it signals reads rather than writes, and including it makes every conversation permanently dirty.
+
+- [ ] **Step 4: Add the IDE application to the module search path**
+
+In `src/shared/agPaths.ts`, extend the macOS branch of `AG_APP_ROOT_CANDIDATES`:
+
+```typescript
+const AG_APP_ROOT_CANDIDATES: string[] = isMac
+    ? [
+        // The IDE build ships under its own name; the plain one may not exist, or
+        // may exist without the native module. Both are listed because either can
+        // be the installed product, and getSqlite3Module tries them in order.
+        '/Applications/Antigravity IDE.app/Contents/Resources/app',
+        '/Applications/Antigravity.app/Contents/Resources/app',
+      ]
+    : isLinux
+```
+
+Leave the Linux and Windows branches alone — this is a macOS packaging difference.
+
+- [ ] **Step 5: Confirm the native module now resolves**
+
+```bash
+node -e "console.log('native module:', require('./out/shared/agPaths').getSqlite3Module() ? 'LOADED' : 'not found')"
+```
+
+Expected: `LOADED`. If it still reports not found, stop and report — the rest of this task's value depends on it.
+
+- [ ] **Step 6: Measure the improvement**
+
+Time a full store read before and after, so the gain is on the record rather than assumed:
+
+```bash
+node -e "
+const t=Date.now();
+const s=require('./out/services/usage/store/conversationStore');
+const r=require('./out/services/usage/store/usageReader');
+(async()=>{ const c=s.listConversations(); let n=0;
+  for (const x of c.slice(0,20)) { const e=await r.readConversationUsage(x.dbPath); n+=e?e.length:0; }
+  console.log('20 conversations,', n, 'entries,', Date.now()-t, 'ms');
+})();"
+```
+
+Report the number. Also confirm `listConversations()` still returns the same count as before the change.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/shared/agPaths.ts src/services/usage/store/conversationStore.ts src/services/usage/types.ts
+git commit -m "perf(usage): load the native database module, stop reads marking conversations dirty
+
+The macOS module search path listed only /Applications/Antigravity.app, which
+has no @vscode/sqlite3 — it ships under Antigravity IDE.app — so every read
+spawned the command-line tool instead, about 9 ms against under 1 ms.
+
+Freshness counted the -shm sidecar, which a reader creates. The first read of
+any checkpointed conversation therefore stamped it as just-modified and it
+looked dirty forever after, turning incremental refresh into a permanent full
+rescan. Readers do not touch -wal, so write detection is unaffected."
+```
+
 ## Release
 
 After Task 10, bump to `3.3.0`, add a CHANGELOG entry covering all four reasons numbers change, package, and install. **Do not deploy without asking.**

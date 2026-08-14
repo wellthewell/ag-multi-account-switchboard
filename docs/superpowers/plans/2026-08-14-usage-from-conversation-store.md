@@ -73,6 +73,8 @@ Timestamp: field 1 → field 9 → field 4 → field 1, unix seconds.
 
 - [ ] **Step 1: Write the failing self-check**
 
+The fixture below is deliberately minimal; **it is not sufficient on its own.** The test must also use multi-character values including one containing a space, select at least one blob column as `quote(...)` and assert it matches `/^X'[0-9A-F]+'$/`, and call `cliAll` directly rather than only through `dbAllAt` — which prefers the native backend and would otherwise leave the fallback untested. Single-character fixture data cannot detect a delimiter bug, which is exactly how one shipped here under a passing self-check. If `sqlite3` is absent from the environment, skip the fallback assertions with a printed note saying so; a silent skip is worse than no test.
+
 Append inside the existing `--self-check` block in `src/services/usage/types.ts`, before the final `console.log`:
 
 ```typescript
@@ -164,13 +166,19 @@ function cliAll(dbPath: string, sql: string): Promise<string[][] | null> {
     return new Promise((resolve) => {
         try {
             const cp = require('child_process');
-            cp.execFile('sqlite3', ['-separator', '', dbPath, sql],
+            // ASCII unit separator, not an empty one. An empty separator
+            // concatenates the columns and leaves nothing to split on, so
+            // splitting the result explodes every multi-character value into
+            // single characters. Relies on values containing neither the
+            // separator nor a newline, which holds for every query this serves:
+            // quote()-wrapped blobs are hex, everything else is an integer.
+            cp.execFile('sqlite3', ['-separator', '\x1f', dbPath, sql],
                 { timeout: CONVERSATION_READ_TIMEOUT_MS, maxBuffer: CONVERSATION_READ_MAX_BUFFER },
                 (err: any, stdout: string) => {
                     if (err) { resolve(null); return; }
                     const text = stdout.replace(/\n$/, '');
                     if (!text) { resolve([]); return; }
-                    resolve(text.split('\n').map(line => line.split('')));
+                    resolve(text.split('\n').map(line => line.split('\x1f')));
                 });
         } catch { resolve(null); }
     });

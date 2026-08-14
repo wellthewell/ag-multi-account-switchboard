@@ -1317,6 +1317,31 @@ export async function verifyConversation(
 }
 ```
 
+- [ ] **Step 2a: Carry over three findings from Task 8's review**
+
+Task 8's review left three items whose fix belongs here, because they all live in `refreshFromStore` and the first needs the same `serverInfo` parameter this task threads through anyway. Doing them in Task 8 would mean changing the signature twice.
+
+**Important, plan-mandated — the language server's title role went dark.** The plan states the server keeps two roles, titles being one, and Task 8's brief claimed `fetchTrajectorySummaries` "continues to run for titles". It does not: its only two call sites are inside `twoPhaseFullFetch` and `incrementalRefresh`, both now gated behind `usageSource: 'server'`. Under the shipped default the server's titles are never fetched, and `refreshFromStore` only reads whatever `currentTitleMap` or the disk cache already held.
+
+Titles do not go blank — `aggregateFromPerConvo` already falls back to `getTitleFromBrain` then `getTitleFromTranscript`, deriving a title from local files. But that is lower fidelity than the server's, and the constraint was explicit.
+
+Once `serverInfo` is in scope, call it in `refreshFromStore` before aggregating and use its result:
+
+```typescript
+        // The server still owns titles; only usage moved to the store. It tolerates
+        // being unreachable, so this cannot reintroduce the dependency the store
+        // path exists to remove.
+        const summaries = await this.fetchTrajectorySummaries(serverInfo).catch(() => null);
+        if (summaries) {
+            this.currentTitleMap = summaries.titleMap;
+            this.currentStepCounts = summaries.stepCounts;
+        }
+```
+
+**Minor — `fetchedIds` is written with every id twice.** `[...presentIds, ...Object.keys(merged)]` duplicates every present conversation, because `mergeIntoLedger` puts them all in `merged` by construction. Consumers dedupe on read so nothing breaks, but the "Disk cache written: N conversations" log reports roughly double the real count. Pass `Object.keys(merged)` alone.
+
+**Minor — every poll reports a change.** `incrementalRefresh` returns `false` when nothing was dirty, specifically to suppress a redundant `onBackfillComplete`. `refreshFromStore` always returns a stats object, so the callback fires on every poll and the interface refreshes for nothing. Return the existing cache without re-aggregating when `dirty.length === 0`.
+
 - [ ] **Step 2: Run it opportunistically after a store refresh**
 
 At the end of `refreshFromStore`, before the return, verify a small sample without blocking:

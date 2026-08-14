@@ -1534,6 +1534,170 @@ excluded from cost, and the cross-check result."
 
 ---
 
+### Task 11: Key live pricing by model id, not display name
+
+Added mid-plan after review of Task 2 exposed that the dynamic pricing catalog has never once been used.
+
+`src/extension.ts:59` registers the LiteLLM resolver and hands it a **humanized display name**. The catalog is keyed by **API model id**. Probed against the live catalog (2,158 models):
+
+```
+display names the extension passes today    raw / resolved model ids
+  Claude Opus 4.8        MISS                 claude-opus-4-8    HIT  $5.00/M in, $25.00/M out
+  Fable 5                MISS                 claude-fable-5     HIT  $10.00/M in, $50.00/M out
+  Gemini 3.6 Flash       MISS                 gemini-3-flash     HIT  $0.50/M in, $3.00/M out
+```
+
+Every cost figure the extension has ever shown came from the hardcoded keyword guesser at `usage-components.ts:449-471`, not from live pricing. Fable 5 is under-priced 3.3× — guessed as Sonnet at $3/$15 against a real $10/$50 — so correcting this moves totals **up**.
+
+The right key is neither the display name nor always the raw enum: it is the **resolved** id that `getModelDisplayName` computes internally before humanizing (`MODEL_PLACEHOLDER_M47` → `gemini-3-flash-c`, which the catalog's alias logic matches by stripping `-c`).
+
+**Files:**
+- Modify: `src/services/usage/aggregator.ts` — extract the resolution step, export it
+- Modify: `src/types.ts` — `ModelBucket.rawModel?: string`
+- Modify: `src/shared/usage-components.ts` — `matchPricing` takes the key; three call sites pass it
+- Modify: `src/services/usage/types.ts` — self-check
+
+**Interfaces:**
+- Consumes: `PLACEHOLDER_MAP`, `OPUS_46_CUTOFF` (existing).
+- Produces:
+  - `getModelPricingKey(raw: string, ts?: string): string` — the resolved id, before humanization
+  - `matchPricing(displayName: string, pricingKey?: string): PricingEntry` — tries the external resolver on `pricingKey` first, then `displayName`, then the keyword table
+  - `ModelBucket.rawModel?: string` — optional, so caches written before this task still load
+
+- [ ] **Step 1: Write the failing self-check**
+
+The load-bearing assertion is the stub resolver: it records what string it was handed, which is the only thing that proves the bug is fixed rather than merely worked around.
+
+```typescript
+    // ─── live pricing is keyed by model id, not display label ───
+    const { getModelPricingKey } = require('./aggregator');
+    const uc = require('../../shared/usage-components');
+
+    assert.strictEqual(getModelPricingKey('MODEL_PLACEHOLDER_M47'), 'gemini-3-flash-c', 'mapped placeholder resolves to its id');
+    assert.strictEqual(getModelPricingKey('MODEL_PLACEHOLDER_M26', '2026-01-01T00:00:00.000Z'), 'claude-opus-4-5-thinking', 'M26 is date-aware before the cutoff');
+    assert.strictEqual(getModelPricingKey('MODEL_PLACEHOLDER_M26', '2026-08-01T00:00:00.000Z'), 'claude-opus-4-6-thinking', 'M26 after the cutoff');
+    assert.strictEqual(getModelPricingKey('MODEL_PLACEHOLDER_M266'), 'MODEL_PLACEHOLDER_M266', 'an unmapped placeholder has no better key than itself');
+
+    // The regression this task exists for: the resolver must receive the id, not the label.
+    const seen: string[] = [];
+    uc.setExternalPricingResolver((key: string) => {
+        seen.push(key);
+        return key === 'claude-fable-5' ? { input: 10, output: 50, cache: 1, reasoning: 50 } : null;
+    });
+    const p = uc.matchPricing('Fable 5', 'claude-fable-5');
+    assert.strictEqual(p.input, 10, 'live pricing wins when the key resolves');
+    assert.strictEqual(p.output, 50, 'live output rate applied');
+    assert.ok(seen.includes('claude-fable-5'), 'the resolver was asked about the model id');
+    assert.strictEqual(seen[0], 'claude-fable-5', 'the id is tried FIRST, before the display label');
+    uc.setExternalPricingResolver(null);   // restore, or later assertions inherit the stub
+    console.log('pricing key: all checks passed');
+```
+
+- [ ] **Step 2: Run it and verify it fails**
+
+```bash
+npm run compile:extension && node out/services/usage/types.js --self-check
+```
+
+Expected: `getModelPricingKey is not a function`.
+
+- [ ] **Step 3: Extract the resolution step in `aggregator.ts`**
+
+`getModelDisplayName` already computes this; lift it so both share one implementation rather than duplicating the date rule.
+
+```typescript
+/**
+ * The id a model should be priced under — resolved from its placeholder, but
+ * before humanization.
+ *
+ * The pricing catalog is keyed by API model id (`claude-fable-5`), while the
+ * display layer produces labels (`Fable 5`). Handing the catalog a label
+ * matches nothing, which is why dynamic pricing silently never applied.
+ */
+export function getModelPricingKey(raw: string, ts?: string): string {
+    if (!raw || raw === 'Unknown') return '';
+    if (raw === 'MODEL_PLACEHOLDER_M26' && ts && ts.slice(0, 10) < OPUS_46_CUTOFF) {
+        return 'claude-opus-4-5-thinking';
+    }
+    return PLACEHOLDER_MAP[raw] || raw;
+}
+```
+
+Then rewrite the opening of `getModelDisplayName` to call it:
+
+```typescript
+    let resolved = getModelPricingKey(raw, ts);
+```
+
+replacing the existing `let resolved = PLACEHOLDER_MAP[raw] || raw;` and the `if (raw === 'MODEL_PLACEHOLDER_M26' ...)` block that follows it. Everything below that point is unchanged.
+
+- [ ] **Step 4: Carry the key through to pricing**
+
+In `src/types.ts`, add to `ModelBucket`:
+
+```typescript
+    /** Resolved model id for pricing. Optional: caches written before this existed have no value. */
+    rawModel?: string;
+```
+
+In `aggregator.ts` `buildModelBuckets`, record it on first sight of each display name — entries carry `e.model`, and the bucket key is the display name:
+
+```typescript
+        if (!map[dn]) map[dn] = { displayName: dn, rawModel: getModelPricingKey(e.model, e.ts), input: 0, output: 0, cache: 0, cacheWrite: 0, reasoning: 0, calls: 0 };
+```
+
+In `usage-components.ts`, widen `matchPricing`:
+
+```typescript
+export function matchPricing(displayName: string, pricingKey?: string): PricingEntry {
+    if (externalResolver) {
+        // The id first — the catalog is keyed by id, and the display label
+        // matches nothing. Falling back to the label costs one failed lookup
+        // and keeps older cached buckets, which carry no id, working.
+        const external = (pricingKey && externalResolver(pricingKey)) || externalResolver(displayName);
+        if (external) return external;
+    }
+    // ... keyword table unchanged ...
+```
+
+Pass the key at all three cost sites: `calculateTotalCost` (`matchPricing(m.displayName, m.rawModel)`), `estimateTopModelCosts`, and `renderCostEstimate`.
+
+- [ ] **Step 5: Run the self-check and verify it passes**
+
+```bash
+npm run compile:extension && node out/services/usage/types.js --self-check
+```
+
+Expected: `pricing key: all checks passed`, all earlier sections still passing.
+
+- [ ] **Step 6: Measure the correction against real data**
+
+```bash
+node -e "
+const {aggregateFromPerConvo}=require('./out/services/usage/aggregator.js');
+const {calculateTotalCost}=require('./out/shared/usage-components.js');
+const fs=require('fs'),os=require('os'),path=require('path');
+const c=JSON.parse(fs.readFileSync(path.join(os.homedir(),'.gemini','antigravity','brain','.deep_stats_cache.json'),'utf8'));
+const s=aggregateFromPerConvo(c.perConvo,new Map(Object.entries(c.titleMap||{})),'');
+for(const m of s.models.slice(0,8)) console.log(String(m.displayName).padEnd(30), (m.rawModel||'(none)').padEnd(28), '\$'+calculateTotalCost([m]).toFixed(0));
+console.log('TOTAL \$'+calculateTotalCost(s.models).toFixed(0));
+"
+```
+
+Every model should show a resolved `rawModel`. Record the before and after totals in the commit message — this changes user-visible numbers and the change must be traceable. Note that this runs outside the extension host, so no external resolver is registered and the keyword table still answers; the point of this step is to confirm the key is populated, not to observe the new prices.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/services/usage/aggregator.ts src/types.ts src/shared/usage-components.ts src/services/usage/types.ts
+git commit -m "fix(pricing): key the live catalog by model id, not display label
+
+The LiteLLM resolver was registered against humanized display names while the
+catalog is keyed by API model id, so no lookup has ever matched and every cost
+figure came from the hardcoded keyword guesser. Fable 5 was priced as Sonnet
+at \$3/\$15 against a real \$10/\$50."
+```
+
 ## Release
 
 After Task 10, bump to `3.3.0`, add a CHANGELOG entry covering all four reasons numbers change, package, and install. **Do not deploy without asking.**

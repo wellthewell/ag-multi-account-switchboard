@@ -514,7 +514,9 @@ Expected: `usageReader: all checks passed`.
 node -e "require('./out/services/usage/store/usageReader').readGenMetadata(process.env.HOME+'/.gemini/antigravity-cli/conversations/1d9ecd7c-ecf8-418f-bd4e-15add0b07db7.db').then(e=>console.log('entries:',e.length,'first:',JSON.stringify(e[0])))"
 ```
 
-Expected: 210 entries; the first shows non-zero `inp` and a plausible `ts`. If the count is zero, the read failed — do not proceed.
+Expected: **207** entries; the first shows non-zero `inp` and a plausible `ts`. If the count is zero, the read failed — do not proceed.
+
+The conversation holds 210 `gen_metadata` rows, but 3 of them carry a zero-length usage submessage — user-cancelled streaming requests, identifiable by a `context canceled by user` string in the row. Decoding them to nothing is correct: they consumed no billable tokens. (An earlier draft of this plan said 210, taken from the row count rather than the count of rows carrying usage. Verified: 210 rows, 207 with a usage message, 3 empty, 0 malformed.)
 
 - [ ] **Step 6: Commit**
 

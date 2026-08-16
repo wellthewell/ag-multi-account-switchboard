@@ -5,7 +5,7 @@
 
 import {
     TokenEntry, ConvoTokenData, MonthlyAccumulator, MetadataUsage,
-    PLACEHOLDER_MAP, OPUS_46_CUTOFF, PROVIDER_DISPLAY, entryFingerprint,
+    PLACEHOLDER_MAP, OPUS_46_CUTOFF, PROVIDER_DISPLAY, entryFingerprint, modelLabel,
 } from './types';
 import {
     DeepUsageStats, DailyBucket, HourlyBucket, ModelBucket,
@@ -52,8 +52,12 @@ export function getModelDisplayName(raw: string, apiProvider?: string, ts?: stri
 
     let resolved = getModelPricingKey(raw, ts);
 
-    // Unmapped placeholders: show as readable label (e.g. "Placeholder M50")
+    // Unmapped placeholders: prefer the vendor's own label, which the server
+    // hands out for every model the account may use. Only when no label has
+    // ever been seen for this enum do we admit we don't know it.
     if (resolved === raw && /^MODEL_PLACEHOLDER_/i.test(raw)) {
+        const label = modelLabel(raw);
+        if (label) return label;
         const id = raw.replace(/^MODEL_PLACEHOLDER_/i, '');
         return `Placeholder ${id}`;
     }

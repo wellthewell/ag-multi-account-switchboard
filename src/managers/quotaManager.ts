@@ -8,6 +8,7 @@ import { ServerDiscoveryService } from '../services/serverDiscovery';
 import { AccountSwitchService } from '../services/accountSwitch';
 import { TokenBaseService, TokenBaseData, WorkspaceContextData } from '../services/tokenBase';
 import { UsageStatsService } from '../services/usage';
+import { learnModelLabels, setLearnedModelLabels, allLearnedModelLabels } from '../services/usage/types';
 import { ContextWindowService, ContextWindowData } from '../services/contextWindow';
 import { LiveStream } from '../services/liveStream';
 import { StatusBarService } from '../services/statusBar';
@@ -45,6 +46,7 @@ export class QuotaManager {
     private lastActiveEmail = '';
 
     private static readonly CTX_CACHE_KEY = 'ag.lastContextWindow';
+    private static readonly MODEL_LABELS_KEY = 'ag.modelLabels';
     private static readonly CASCADE_ID_LOG_LEN = 12;
     private static readonly POST_SWITCH_REFRESH_DELAY = 2000;
     private static readonly DEBOUNCE_MS = 1500;
@@ -68,6 +70,9 @@ export class QuotaManager {
     ) {
         this.switchService = new AccountSwitchService(context, accountManager.getAuthService());
         this.statusBar = new StatusBarService(context);
+
+        // Labels learned in past sessions, before any server has been reached.
+        setLearnedModelLabels(context.globalState.get<Record<string, string>>(QuotaManager.MODEL_LABELS_KEY, {}));
         context.subscriptions.push({ dispose: () => this.switchService.dispose() });
         context.subscriptions.push({ dispose: () => this.liveStream.destroy() });
         context.subscriptions.push({ dispose: () => this.switchController?.abort() });
@@ -400,6 +405,7 @@ export class QuotaManager {
             if (localResult) {
                 this.lastLocalData = localResult;
                 this.updateStatusBar(localResult);
+                this.harvestModelLabels(localResult);
                 this.logQuotaFractions(localResult);
             } else {
                 this.lastLocalData = null;
@@ -566,6 +572,7 @@ export class QuotaManager {
                     if (localData) {
                         this.lastLocalData = localData;
                         this.updateStatusBar(localData);
+                        this.harvestModelLabels(localData);
                     }
                 } catch (e: any) {
                     log.warn('Post-switch local fetch failed:', e?.message);
@@ -664,6 +671,22 @@ export class QuotaManager {
 
     private updateStatusBar(data: LocalQuotaData): void {
         this.statusBar.update(data, this.getSelectedModels());
+    }
+
+    /**
+     * Record the vendor's own label for each model this account may use.
+     *
+     * The server only lists models currently offered to the signed-in tier, so
+     * labels are learned opportunistically and kept forever — a model withdrawn
+     * next month still has to render a name for the usage it already produced.
+     * Switching accounts is the richest moment to learn, since another tier
+     * exposes models this one never sees.
+     */
+    private harvestModelLabels(data: LocalQuotaData): void {
+        const fresh = learnModelLabels(data.userStatus?.cascadeModelConfigData?.clientModelConfigs);
+        if (Object.keys(fresh).length === 0) return;
+        log.info(`learned ${Object.keys(fresh).length} model label(s): ${Object.keys(fresh).join(', ')}`);
+        void this.context.globalState.update(QuotaManager.MODEL_LABELS_KEY, allLearnedModelLabels());
     }
 
     /** Diagnostic probe: log raw LS remainingFraction per model (only in diag mode) */

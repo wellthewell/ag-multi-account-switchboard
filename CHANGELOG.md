@@ -2,6 +2,16 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [3.3.1] — 2026-08-16
+
+### Fixed
+- **Models show their real names instead of `Placeholder M187`.** Antigravity's protocol ships blank `MODEL_PLACEHOLDER_M<n>` slots so unreleased model names never appear in the client binary, and the extension had static guesses for only six of them — none covering the Gemini 3.5, 3.6, and 3.7 families that the command-line client actually runs on. The server hands out the real label for every model an account may use, in a response the extension already fetches for quota, so those labels are now harvested from it at no extra cost. On the development machine this named 85% of all recorded calls, up from roughly 15%.
+- Labels are **remembered once seen**, so a model still renders its name after being withdrawn from the catalogue. Switching accounts learns the most, since another tier exposes models the current one never lists.
+
+### Notes
+- A handful of enums stay `Placeholder M<n>` — no account currently offers them and the stored records contain no model name, only the enum, so naming them would mean guessing. They will resolve on their own if the model reappears on any signed-in account.
+- Learned labels never override a model that already has a known rate, so date-aware pricing is unaffected.
+
 ## [3.3.0] — 2026-08-15
 
 Usage is now read from Antigravity's conversation store instead of from the language server.

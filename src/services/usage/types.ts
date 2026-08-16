@@ -182,6 +182,75 @@ export const PLACEHOLDER_MAP: Record<string, string> = {
     'MODEL_OPENAI_GPT_OSS_120B_MEDIUM': 'gpt-oss-120b',
 };
 
+/**
+ * Placeholder enum → the label the vendor itself shows for it.
+ *
+ * The .proto ships blank `MODEL_PLACEHOLDER_M<n>` slots so unreleased model
+ * names never appear in the client binary — which is why these cannot be
+ * derived, only observed. GetUserStatus returns the real label for every model
+ * the signed-in account may use, so the extension harvests them from a response
+ * it already fetches for quota (see learnModelLabels) and merges the result
+ * over this seed.
+ *
+ * Seeded from a live GetUserStatus on 2026-08-16. Kept separate from
+ * PLACEHOLDER_MAP because that map feeds pricing: inventing a plausible model
+ * id for an unreleased model risks fuzzy-matching it to another model's rate
+ * and inventing a cost. A label is safe to display; a made-up id is not.
+ */
+export const MODEL_LABEL_SEED: Record<string, string> = {
+    'MODEL_PLACEHOLDER_M16': 'Gemini 3.1 Pro (High)',
+    'MODEL_PLACEHOLDER_M20': 'Gemini 3.5 Flash (Medium)',
+    'MODEL_PLACEHOLDER_M71': 'Gemini 3.6 Flash (High)',
+    'MODEL_PLACEHOLDER_M72': 'Gemini 3.6 Flash (Medium)',
+    'MODEL_PLACEHOLDER_M73': 'Gemini 3.6 Flash (Low)',
+    'MODEL_PLACEHOLDER_M84': 'Gemini 3.5 Flash (High)',
+    'MODEL_PLACEHOLDER_M187': 'Gemini 3.5 Flash (Low)',
+    'MODEL_PLACEHOLDER_M298': 'Gemini 3.7 Flash (High)',
+    'MODEL_PLACEHOLDER_M299': 'Gemini 3.7 Flash (Medium)',
+    'MODEL_PLACEHOLDER_M300': 'Gemini 3.7 Flash (Low)',
+};
+
+/**
+ * Labels observed at runtime, merged over MODEL_LABEL_SEED. Populated from
+ * persisted state at activation and topped up whenever a GetUserStatus response
+ * is parsed, so a model's label survives the model being withdrawn later.
+ */
+let learnedLabels: Record<string, string> = {};
+
+/** Replace the learned set — called once at activation with the persisted map. */
+export function setLearnedModelLabels(labels: Record<string, string>): void {
+    learnedLabels = { ...labels };
+}
+
+/**
+ * Harvest labels out of a GetUserStatus payload. Returns the newly learned
+ * pairs only, so the caller can skip persisting when nothing changed.
+ */
+export function learnModelLabels(
+    configs: Array<{ label?: string; modelOrAlias?: { model?: string } }> | undefined,
+): Record<string, string> {
+    const fresh: Record<string, string> = {};
+    for (const c of configs || []) {
+        const key = c?.modelOrAlias?.model;
+        const label = c?.label;
+        if (!key || !label) continue;
+        if (learnedLabels[key] === label) continue;
+        fresh[key] = label;
+        learnedLabels[key] = label;
+    }
+    return fresh;
+}
+
+/** The vendor's own label for a model enum, if one has ever been seen. */
+export function modelLabel(raw: string): string | undefined {
+    return learnedLabels[raw] || MODEL_LABEL_SEED[raw];
+}
+
+/** Everything known right now — for persisting back to extension state. */
+export function allLearnedModelLabels(): Record<string, string> {
+    return { ...learnedLabels };
+}
+
 // Date-aware placeholder overrides: M26 was Opus 4.5 before Opus 4.6 shipped
 // Opus 4.6 released Feb 5, 2026 — arrived in Antigravity same day
 export const OPUS_46_CUTOFF = '2026-02-05';
@@ -868,6 +937,58 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 fsD0.unlinkSync(tmpCacheD0);
                 console.log('health survives reload: all checks passed (dirty:0 path and a real persisted dirty pass)');
             }
+        }
+
+        // ─── model labels: the vendor's name beats our placeholder ───
+        {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { getModelDisplayName } = require('./aggregator');
+
+            // Seeded enums render the vendor's label, not "Placeholder M187".
+            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M187'), 'Gemini 3.5 Flash (Low)',
+                'a seeded placeholder shows the real model name');
+            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M298'), 'Gemini 3.7 Flash (High)',
+                'seed covers the 3.7 family');
+
+            // An enum nobody has ever seen must stay visibly unknown, never guessed.
+            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M9999'), 'Placeholder M9999',
+                'an unseen placeholder admits it is unknown');
+
+            // Learning at runtime names a model the seed never knew.
+            const learnedNow = learnModelLabels([
+                { label: 'Gemini 4.0 Pro (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M9999' } },
+                { label: 'no key', modelOrAlias: {} },
+                { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M8888' } },
+            ]);
+            assert.deepStrictEqual(learnedNow, { 'MODEL_PLACEHOLDER_M9999': 'Gemini 4.0 Pro (High)' },
+                'only complete pairs are learned, and only the new ones are returned for persisting');
+            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M9999'), 'Gemini 4.0 Pro (High)',
+                'a learned label takes effect immediately');
+
+            // Re-learning the same label reports nothing fresh, so we do not write state every poll.
+            assert.deepStrictEqual(
+                learnModelLabels([{ label: 'Gemini 4.0 Pro (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M9999' } }]),
+                {}, 'an unchanged label is not re-persisted');
+
+            // A learned label must not override a mapping that drives pricing: M26 is
+            // date-aware (Opus 4.5 before the 4.6 cutoff) and must stay that way.
+            learnModelLabels([{ label: 'WRONG', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M26' } }]);
+            assert.strictEqual(
+                getModelDisplayName('MODEL_PLACEHOLDER_M26', undefined, '2026-01-01T00:00:00.000Z'),
+                'Claude Opus 4.5 (Thinking)',
+                'labels never override a priced placeholder, so date-aware resolution survives');
+
+            // Persistence round-trip: what we hand the store restores what we knew.
+            const snapshot = allLearnedModelLabels();
+            assert.strictEqual(snapshot['MODEL_PLACEHOLDER_M9999'], 'Gemini 4.0 Pro (High)', 'snapshot carries learned labels');
+            setLearnedModelLabels({});
+            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M9999'), 'Placeholder M9999', 'cleared state forgets');
+            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M187'), 'Gemini 3.5 Flash (Low)', 'but the seed survives a clear');
+            setLearnedModelLabels(snapshot);
+            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M9999'), 'Gemini 4.0 Pro (High)', 'restore brings them back');
+            setLearnedModelLabels({});
+
+            console.log('model labels: all checks passed');
         }
     })();
 }

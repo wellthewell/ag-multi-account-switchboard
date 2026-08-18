@@ -1,8 +1,20 @@
 /**
  * Conversation Guard — Detection & Fix Orchestrator
- * Detects missing conversations by comparing .pb files on disk
+ * Detects missing conversations by comparing conversation files on disk
  * with the sidebar index in state.vscdb, and spawns a detached
  * worker to rebuild the index when requested.
+ *
+ * Detection is deliberately silent in two situations, because in both the
+ * comparison cannot separate a real problem from normal operation:
+ *
+ *   - Legacy `.pb` files. Antigravity stores conversations as SQLite `.db`
+ *     now. A leftover `.pb` will never be indexed again, so counting it
+ *     produces a warning that can never be resolved and never means anything.
+ *   - A conversation directory shared with another install root. The
+ *     command-line client and the IDE are commonly pointed at one directory
+ *     (often by symlink), and the sidebar index only ever lists the IDE's own
+ *     sessions. Every command-line conversation would then read as "missing"
+ *     while nothing is wrong at all.
  */
 
 import * as vscode from 'vscode';
@@ -10,7 +22,7 @@ import * as fs from 'fs';
 import * as cp from 'child_process';
 import * as path from 'path';
 import { STATE_DB_PATH } from '../constants';
-import { CONVERSATIONS_DIR, BRAIN_DIR } from '../shared/agPaths';
+import { CONVERSATIONS_DIR, BRAIN_DIR, isSharedConversationStore } from '../shared/agPaths';
 import { getGlobalIndexData, isGenericTitle, getTitleFromBrain, getTitleFromTranscript } from '../shared/titleResolver';
 import { isDbAvailable } from '../shared/db';
 import { createLogger } from '../utils/logger';
@@ -60,8 +72,15 @@ export class ConversationGuard implements vscode.Disposable {
         try {
             if (!fs.existsSync(CONVERSATIONS_DIR)) return null;
 
-            const pbFiles = fs.readdirSync(CONVERSATIONS_DIR).filter(f => f.endsWith('.pb'));
-            const onDisk = pbFiles.length;
+            // A shared store makes the index a legitimate subset of the disk,
+            // so there is no honest comparison left to make.
+            if (isSharedConversationStore()) {
+                log.info('Detection skipped: conversation store is shared with another install root');
+                return null;
+            }
+
+            const files = fs.readdirSync(CONVERSATIONS_DIR).filter(f => f.endsWith('.db'));
+            const onDisk = files.length;
             if (onDisk === 0) return null;
 
             if (!fs.existsSync(STATE_DB_PATH)) return null;
@@ -73,7 +92,7 @@ export class ConversationGuard implements vscode.Disposable {
             }
             if (!this._dbAvailable) return null;
 
-            const diskIds = new Set(pbFiles.map(f => f.replace('.pb', '')));
+            const diskIds = new Set(files.map(f => f.slice(0, -3)));
             const indexIds = await this._readIndexIds();
 
             // Missing = on disk but NOT in index (user can't see these)
@@ -163,6 +182,20 @@ export class ConversationGuard implements vscode.Disposable {
 
     /** Spawn detached worker to fix conversations — AG will quit */
     runFix(): void {
+        // The worker REPLACES the sidebar index with whatever it finds on disk.
+        // On a shared store that disk holds every command-line conversation too,
+        // so a rebuild would silently import them all into the IDE sidebar —
+        // never what "fix missing conversations" was asked to do. Refuse rather
+        // than guess, and refuse here: the caller quits the IDE right after.
+        if (isSharedConversationStore()) {
+            log.warn('Fix refused: conversation store is shared with another install root');
+            vscode.window.showInformationMessage(
+                'Nothing to repair. This conversation directory is shared with the command-line client, '
+                + 'so the sidebar index is expected to list only the IDE\'s own sessions.',
+            );
+            return;
+        }
+
         const workerPath = path.join(__dirname, '..', 'scripts', 'conversationFix.js');
 
         if (!fs.existsSync(workerPath)) {

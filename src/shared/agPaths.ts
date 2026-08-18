@@ -9,6 +9,7 @@
 
 import * as path from 'path';
 import * as os from 'os';
+import * as fs from 'fs';
 
 // ─── Platform Flags ──────────────────────────────────────────────────
 export const isMac = process.platform === 'darwin';
@@ -26,8 +27,32 @@ export const STATE_DB_PATH = isMac
             ? path.join(process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming'), 'Antigravity', 'User', 'globalStorage', 'state.vscdb')
             : '';
 
-/** Directory containing conversation .pb protobuf files */
+/** Directory containing conversation SQLite databases */
 export const CONVERSATIONS_DIR = path.join(os.homedir(), '.gemini', 'antigravity', 'conversations');
+
+/** Install roots that can all be pointed at one conversation directory. */
+const INSTALL_ROOTS = ['antigravity', 'antigravity-ide', 'antigravity-cli'];
+
+/**
+ * True when the conversation directory is the same physical directory that
+ * another install root also uses. Compared by realpath, so a symlink, a bind
+ * mount and a duplicate literal path all give the same answer.
+ *
+ * Callers use this to decide whether the sidebar index can be compared against
+ * the disk at all: when the command-line client and the IDE share a directory,
+ * the index legitimately lists only a subset and any diff is meaningless.
+ */
+export function isSharedConversationStore(conversationsDir: string = CONVERSATIONS_DIR): boolean {
+    let target: string;
+    try { target = fs.realpathSync(conversationsDir); } catch { return false; }
+
+    let matches = 0;
+    for (const name of INSTALL_ROOTS) {
+        const candidate = path.join(os.homedir(), '.gemini', name, 'conversations');
+        try { if (fs.realpathSync(candidate) === target) matches++; } catch { /* absent root */ }
+    }
+    return matches > 1;
+}
 
 /** Directory containing conversation brain data (transcripts, artifacts) */
 export const BRAIN_DIR = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');

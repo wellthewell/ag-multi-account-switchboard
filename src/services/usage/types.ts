@@ -990,6 +990,44 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             console.log('model labels: all checks passed');
         }
+
+        // ─── conversation guard: only warn when the comparison is meaningful ───
+        {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const fsCG = require('fs');
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const osCG = require('os');
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const pathCG = require('path');
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { isSharedConversationStore } = require('../../shared/agPaths');
+
+            // A directory belonging to no install root is nobody's shared store.
+            const solo = fsCG.mkdtempSync(pathCG.join(osCG.tmpdir(), 'cg-solo-'));
+            assert.strictEqual(isSharedConversationStore(solo), false,
+                'an unrelated directory is not shared');
+
+            // A path that does not exist cannot be resolved, and must not warn.
+            assert.strictEqual(isSharedConversationStore(pathCG.join(solo, 'nope')), false,
+                'an unresolvable path is not shared');
+
+            // The real check: this machine symlinks all three install roots at one
+            // directory, which is exactly the arrangement that produced a permanent
+            // false alarm and would have let a rebuild rewrite the sidebar.
+            const roots = ['antigravity', 'antigravity-ide', 'antigravity-cli']
+                .map((n: string) => pathCG.join(osCG.homedir(), '.gemini', n, 'conversations'));
+            const resolved = roots
+                .map((r: string) => { try { return fsCG.realpathSync(r); } catch { return null; } })
+                .filter(Boolean);
+            const sharedHere = resolved.length > 1 && new Set(resolved).size < resolved.length;
+            if (sharedHere) {
+                assert.strictEqual(isSharedConversationStore(roots[0]), true,
+                    'install roots resolving to one directory must read as shared');
+            }
+
+            fsCG.rmSync(solo, { recursive: true, force: true });
+            console.log(`conversation guard: all checks passed${sharedHere ? ' (shared-store case exercised on this machine)' : ' (no shared store here — that branch not exercised)'}`);
+        }
     })();
 }
 

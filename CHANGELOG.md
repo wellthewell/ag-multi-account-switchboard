@@ -2,6 +2,13 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [3.3.2] — 2026-08-18
+
+### Fixed
+- **"N missing conversations" no longer cries wolf — and can no longer wreck the sidebar.** The detector compared `.pb` files against the sidebar index, but Antigravity stores conversations as SQLite `.db` now. On a machine holding 114 real conversations it found one stale `.pb` from a month earlier and reported it missing forever, since a file in a superseded format will never be indexed again.
+- **The repair itself was the bigger risk.** "Fix Now" rebuilds the index from whatever the disk scan returns and then *replaces* the stored index outright. Scanning for the wrong format meant it would have rewritten a 30-conversation sidebar down to a single entry. It now scans the current format, so the rebuild reflects what is actually there. (The previous value was, and still is, backed up to `trajectorySummaries_backup.txt` beside the state database.)
+- **Detection is silent when the conversation directory is shared.** Pointing the command-line client and the IDE at one directory — commonly by symlink — means the sidebar index lists only the IDE's own sessions by design, so every command-line conversation read as "missing". Both the warning and the repair now stand down in that case rather than guess, and the repair explains why instead of restarting the editor for nothing.
+
 ## [3.3.1] — 2026-08-16
 
 ### Fixed

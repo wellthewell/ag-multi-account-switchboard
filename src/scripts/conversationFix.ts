@@ -261,14 +261,20 @@ async function main(): Promise<void> {
     }
 
     // 5. Discover conversations
-    const pbFiles = fs.readdirSync(CONVERSATIONS_DIR).filter(f => f.endsWith('.pb'));
-    if (!pbFiles.length) { log.warn('No .pb files found.'); relaunchAG(relaunchInfo); return; }
-    pbFiles.sort((a, b) => {
+    //
+    // Step 10 REPLACES the whole index with what is built here, so scanning for
+    // the wrong thing does not degrade the result — it destroys it. Reading the
+    // superseded `.pb` format found one stale leftover on a machine holding 114
+    // real conversations, which would have rewritten a 30-entry sidebar down to
+    // a single entry.
+    const convFiles = fs.readdirSync(CONVERSATIONS_DIR).filter(f => f.endsWith('.db'));
+    if (!convFiles.length) { log.warn('No conversation files found.'); relaunchAG(relaunchInfo); return; }
+    convFiles.sort((a, b) => {
         const ma = fs.statSync(path.join(CONVERSATIONS_DIR, a)).mtimeMs;
         const mb = fs.statSync(path.join(CONVERSATIONS_DIR, b)).mtimeMs;
         return mb - ma;
     });
-    const conversationIds = pbFiles.map(f => f.replace('.pb', ''));
+    const conversationIds = convFiles.map(f => f.slice(0, -3));
     log.info(`Found ${conversationIds.length} conversations on disk.`);
 
     // 6. Extract existing metadata
@@ -290,9 +296,9 @@ async function main(): Promise<void> {
     // 8. Build new index
     let resultBytes = Buffer.alloc(0);
     for (const { cid, title, innerData } of resolved) {
-        const pbPath = path.join(CONVERSATIONS_DIR, `${cid}.pb`);
-        const pbMtime = fs.existsSync(pbPath) ? fs.statSync(pbPath).mtimeMs / 1000 : null;
-        const entry = buildTrajectoryEntry(cid, title, innerData, pbMtime);
+        const convPath = path.join(CONVERSATIONS_DIR, `${cid}.db`);
+        const convMtime = fs.existsSync(convPath) ? fs.statSync(convPath).mtimeMs / 1000 : null;
+        const entry = buildTrajectoryEntry(cid, title, innerData, convMtime);
         resultBytes = Buffer.concat([resultBytes, encodeLengthDelimited(1, entry)]);
     }
 

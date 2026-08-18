@@ -2,6 +2,11 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [3.3.3] — 2026-08-18
+
+### Fixed
+- **The missing-conversation dialog no longer offers a repair it will not perform.** It reported "No missing conversations detected" and then presented a "Fix Now" button beneath a hardcoded line promising to close Antigravity and relaunch it — announcing a restart that would not happen, to fix a problem it had just said did not exist. With nothing missing it now says so plainly and offers no action; the warning and the button appear only when conversations really are absent from the sidebar. The restart notice also mentions that the current index is backed up first.
+
 ## [3.3.2] — 2026-08-18
 
 ### Fixed

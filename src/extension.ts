@@ -10,6 +10,7 @@ import { updatePricing, setExternalPricingResolver } from './shared/usage-compon
 import { initPricingCatalog, resolveLiteLlmPricing } from './services/litellmPricing';
 import { ConversationTracker } from './services/conversationTracker';
 import { ConversationGuard } from './services/conversationGuard';
+import { isSharedConversationStore } from './shared/agPaths';
 import { callLsJson } from './utils/lsClient';
 import { initLogger, createLogger, setFileSink, setDiagSink } from './utils/logger';
 
@@ -142,15 +143,29 @@ export async function activate(context: vscode.ExtensionContext) {
             const status = await convGuard.detect();
             const count = status?.missing ?? 0;
 
-            const msg = count > 0
-                ? `${count} missing conversation${count > 1 ? 's' : ''} found.`
-                : 'No missing conversations detected.';
-            const detail = 'This will close Antigravity, rebuild the sidebar index from disk, and relaunch automatically.';
+            // Only offer the repair when there is something to repair. The dialog
+            // used to present "Fix Now" alongside "no missing conversations", over
+            // a hardcoded line promising to close and relaunch the editor — so it
+            // announced a restart it would not perform, to fix a problem it had
+            // just said did not exist.
+            if (count === 0) {
+                vscode.window.showInformationMessage(
+                    isSharedConversationStore()
+                        ? 'No conversations are missing. This directory is shared with the command-line client, '
+                          + "so the sidebar lists only the IDE's own sessions — that is expected, not a fault."
+                        : 'No conversations are missing. Every conversation on disk appears in the sidebar.',
+                );
+                return;
+            }
 
             const confirm = await vscode.window.showWarningMessage(
-                msg,
-                { modal: true, detail },
-                'Fix Now'
+                `${count} missing conversation${count > 1 ? 's' : ''} found.`,
+                {
+                    modal: true,
+                    detail: 'This will close Antigravity, rebuild the sidebar index from disk, and relaunch '
+                        + 'automatically. The current index is backed up first.',
+                },
+                'Fix Now',
             );
             if (confirm === 'Fix Now') convGuard.runFix();
         }),

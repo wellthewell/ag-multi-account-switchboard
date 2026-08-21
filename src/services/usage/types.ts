@@ -1028,6 +1028,32 @@ if (require.main === module && process.argv.includes('--self-check')) {
             fsCG.rmSync(solo, { recursive: true, force: true });
             console.log(`conversation guard: all checks passed${sharedHere ? ' (shared-store case exercised on this machine)' : ' (no shared store here — that branch not exercised)'}`);
         }
+
+        // ─── poll rates: the footer cannot offer what the host would reject ───
+        {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { POLL_INTERVALS_MS, DEFAULT_POLL_INTERVAL_MS, pollIntervalLabel } = require('../../shared/uiConstants');
+
+            assert.ok(POLL_INTERVALS_MS.includes(DEFAULT_POLL_INTERVAL_MS),
+                'the default rate must be one the picker offers, or the footer highlights nothing on first open');
+
+            assert.deepStrictEqual(POLL_INTERVALS_MS.map(pollIntervalLabel), ['30s', '1m', '2m', '5m'],
+                'labels read as the user expects');
+
+            // The drift this guards: the buttons are generated from POLL_INTERVALS_MS
+            // and the host validates against the same array, so a rate added to the UI
+            // is automatically accepted. Assert they are literally the same source —
+            // reintroducing a second hardcoded list is the regression.
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const tpl = require('fs').readFileSync(
+                require('path').join(__dirname, '../../../src/templates/webviewTemplate.ts'), 'utf8');
+            assert.ok(tpl.includes('POLL_INTERVALS_MS.map'),
+                'the footer buttons must be generated from POLL_INTERVALS_MS, not hardcoded');
+            assert.ok(!/data-ms="\d/.test(tpl),
+                'no literal data-ms value may remain in the template');
+
+            console.log('poll rates: all checks passed');
+        }
     })();
 }
 

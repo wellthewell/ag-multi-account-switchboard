@@ -13,22 +13,10 @@ export let lastRenderArgs: unknown[] = [];
 export const setPinnedModels = (m: Record<string, string>) => { pinnedModels = m; };
 export const setLastRenderArgs = (a: unknown[]) => { lastRenderArgs = a; };
 
-// ─── Refresh Timer ───
-let _timer: ReturnType<typeof setInterval> | null = null;
-let _fn: (() => void) | null = null;
-export let intervalMs = 60000;
-
-/** Call once at init — registers the refresh callback and starts the timer. */
-export function initTimer(fn: () => void, ms: number): void {
-    _fn = fn;
-    intervalMs = ms;
-    _timer = setInterval(fn, ms);
-}
-
-/** Updates the refresh interval and persists to webview state. */
-export function updateInterval(ms: number): void {
-    intervalMs = ms;
-    if (_timer) clearInterval(_timer);
-    if (_fn) _timer = setInterval(_fn, ms);
-    vscode.setState({ ...vscode.getState(), intervalMs: ms });
-}
+// ─── Refresh Rate ───
+//
+// There is no timer here on purpose. Polling is the extension host's job: its
+// timer keeps running when the sidebar is collapsed, and a webview timer does
+// not — so a rate chosen here used to stop applying the moment the panel closed,
+// while the host carried on at its own hardcoded 60s regardless. The picker now
+// asks the host to change its rate and reflects whatever the host confirms.

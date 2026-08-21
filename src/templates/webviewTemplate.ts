@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { POLL_INTERVALS_MS, DEFAULT_POLL_INTERVAL_MS, pollIntervalLabel } from '../shared/uiConstants';
 
 /**
  * Generate a random nonce for Content Security Policy.
@@ -177,12 +178,10 @@ export function getWebviewContent(webview: vscode.Webview, extensionUri: vscode.
                 <span class="build-tag">b62</span>
             </div>
             <div class="foot-controls">
-                <div class="interval-pick">
-                    <button class="iv-btn" data-ms="30000" data-action="set-interval">30s</button>
-                    <button class="iv-btn active" data-ms="60000" data-action="set-interval">1m</button>
-                    <button class="iv-btn" data-ms="120000" data-action="set-interval">2m</button>
-                    <button class="iv-btn" data-ms="300000" data-action="set-interval">5m</button>
-                </div>
+                <div class="interval-pick">${POLL_INTERVALS_MS.map(ms =>
+                    `<button class="iv-btn${ms === DEFAULT_POLL_INTERVAL_MS ? ' active' : ''}" `
+                    + `data-ms="${ms}" data-action="set-interval">${pollIntervalLabel(ms)}</button>`
+                ).join('')}</div>
                 <button class="s-btn foot-util" title="Fix Missing Conversations" data-action="fix-conversations">
                     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M14.3 1.7a1 1 0 0 0-1.4 0L11.5 3.1 9 5.6 6.5 3.1a1 1 0 0 0-1.4 0L3.7 4.5a1 1 0 0 0 0 1.4L6.2 8.4l-4.5 4.5a1 1 0 0 0 0 1.4l.7.7a1 1 0 0 0 1.4 0l4.5-4.5 2.5 2.5a1 1 0 0 0 1.4 0l1.4-1.4a1 1 0 0 0 0-1.4L11.1 8l2.5-2.5 1.4-1.4a1 1 0 0 0 0-1.4z"/></svg>
                 </button>

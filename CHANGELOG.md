@@ -2,6 +2,15 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [3.3.4] — 2026-08-21
+
+### Fixed
+- **The refresh-rate picker now controls refreshing.** It drove a timer inside the sidebar webview while a second, hardcoded 60-second timer in the extension host did the actual polling — so `2m` and `5m` changed nothing at all, `30s` merely added a second timer alongside the 60-second one, and any choice stopped applying the moment the panel was collapsed, because webview timers die with the panel. The picker now sets the host's interval, which is the timer that always runs, and the choice is remembered across restarts.
+
+### Changed
+- The webview no longer runs a refresh timer of its own — one timer, in the process that stays alive. The footer highlights the rate the host confirms rather than the button that was clicked, so a rate the host declines cannot leave the UI misreporting it.
+- The rate buttons are generated from a single shared list that the host also validates against, so the UI cannot offer a rate the host would silently reject.
+
 ## [3.3.3] — 2026-08-18
 
 ### Fixed

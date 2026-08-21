@@ -38,13 +38,21 @@ export class QuotaViewProvider implements vscode.WebviewViewProvider {
                     log.info('MSG: ready received');
                     // Instant: push whatever is in memory RIGHT NOW (0ms, no network)
                     this.quotaManager.pushCachedData();
-                    // Then silently fetch fresh quota in background.
-                    // Without this, a re-opened panel shows stale data until the
-                    // next 60s webview timer tick (retainContextWhenHidden is off).
+                    this.postPollInterval();
+                    // Then silently fetch fresh quota in background. A re-opened
+                    // panel would otherwise show stale data until the host's next
+                    // poll tick, which can be up to five minutes away.
                     this.quotaManager.refresh();
                     break;
                 case 'refresh':
                     this.quotaManager.refresh();
+                    break;
+                case 'setPollInterval':
+                    // The host owns the rate: its timer is the one that survives
+                    // the panel being collapsed. Echo the accepted value back so
+                    // the footer never highlights a rate that was rejected.
+                    this.quotaManager.setPollInterval(msg.ms);
+                    this.postPollInterval();
                     break;
                 case 'refreshTokenOnly':
                     this.quotaManager.refreshTokenOnly();
@@ -131,6 +139,11 @@ export class QuotaViewProvider implements vscode.WebviewViewProvider {
         });
 
         webviewView.webview.html = getWebviewContent(webviewView.webview, this.extensionUri);
+    }
+
+    /** Tell the footer which polling rate is actually in force. */
+    private postPollInterval(): void {
+        this._view?.webview.postMessage({ type: 'pollInterval', ms: this.quotaManager.getPollInterval() });
     }
 
     setLoading() {

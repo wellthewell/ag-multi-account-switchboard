@@ -35,6 +35,14 @@ export function setupMessageHandler(): void {
                 $('error')!.innerText = '';
                 break;
             }
+            case 'pollInterval': {
+                // The host is the authority on its own rate — highlight what it
+                // confirmed, not what was clicked.
+                document.querySelectorAll('.iv-btn').forEach(b => {
+                    b.classList.toggle('active', parseInt((b as HTMLElement).dataset.ms || '0') === msg.ms);
+                });
+                break;
+            }
             case 'error':
                 stopSpinners();
                 $('error')!.innerText = msg.message;

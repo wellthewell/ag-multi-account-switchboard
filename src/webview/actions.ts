@@ -3,7 +3,7 @@
  * Each function corresponds to a UI interaction (button click, toggle, etc.)
  */
 
-import { vscode, updateInterval, pinnedModels, lastRenderArgs } from './context';
+import { vscode, pinnedModels, lastRenderArgs } from './context';
 import { renderAll } from './renderers/accounts';
 
 // ─── Helpers ───
@@ -77,8 +77,11 @@ export function switchTab(tabId: string, el: HTMLElement): void {
 }
 
 export function pickInterval(el: HTMLElement): void {
+    // Optimistic highlight; the host echoes back what it accepted, so a rejected
+    // value corrects itself rather than leaving the footer claiming a rate that
+    // is not in force.
     activateOne('.iv-btn', el);
-    updateInterval(parseInt(el.dataset.ms || '60000'));
+    vscode.postMessage({ type: 'setPollInterval', ms: parseInt(el.dataset.ms || '60000') });
 }
 
 export function toggleOpen(el: HTMLElement): void {

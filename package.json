@@ -8,11 +8,16 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/erennyuksell/ag-multi-account-switchboard"
+    "url": "https://github.com/wellthewell/ag-multi-account-switchboard"
   },
-  "homepage": "https://github.com/erennyuksell/ag-multi-account-switchboard#readme",
+  "homepage": "https://github.com/wellthewell/ag-multi-account-switchboard#readme",
   "bugs": {
-    "url": "https://github.com/erennyuksell/ag-multi-account-switchboard/issues"
+    "url": "https://github.com/wellthewell/ag-multi-account-switchboard/issues"
+  },
+  "author": {
+    "name": "Well",
+    "email": "varakorn.jit@gmail.com",
+    "url": "https://github.com/wellthewell"
   },
   "categories": [
     "Other",

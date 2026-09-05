@@ -1,249 +1,157 @@
-# AG Multi-Account Switchboard
+# 🎛️ AG Multi-Account Switchboard
 
-**The missing control panel for Antigravity IDE — switch accounts instantly, monitor AI quotas in real time, drill into token budgets, and track usage costs across every conversation you've ever had.**
+<p align="center">
+  <b>The Mission Control Panel for Antigravity IDE & the <code>agy</code> CLI</b><br/>
+  <i>Switch Google AI accounts instantly, monitor real-time model quotas, dissect active context tokens, and unlock deep offline conversation analytics.</i>
+</p>
+
+<p align="center">
+  <a href="https://github.com/wellthewell/ag-multi-account-switchboard/releases"><img alt="Latest Release" src="https://img.shields.io/github/v/release/wellthewell/ag-multi-account-switchboard?color=00c853&label=Release&logo=github"/></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-blue?logo=apple"/>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-purple.svg"/></a>
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white"/>
+  <img alt="Antigravity" src="https://img.shields.io/badge/Antigravity-IDE%20%26%20CLI-FF6D00"/>
+</p>
+
+---
 
 <table align="center">
   <tr>
-    <td align="center"><img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/preview.png" alt="Accounts" width="400"/><br/><sub><b>Accounts</b></sub></td>
-    <td align="center"><img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/token-budget.png" alt="Token Budget" width="176"/><br/><sub><b>Token Budget</b></sub></td>
-    <td align="center"><img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/usage-sidebar.png" alt="Usage Stats" width="177"/><br/><sub><b>Usage Stats</b></sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/wellthewell/ag-multi-account-switchboard/main/assets/preview.png" alt="Accounts Panel" width="380"/><br/><sub><b>Live Quotas & Accounts</b></sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/wellthewell/ag-multi-account-switchboard/main/assets/token-budget.png" alt="Token Budget" width="180"/><br/><sub><b>Active Context Window</b></sub></td>
+    <td align="center"><img src="https://raw.githubusercontent.com/wellthewell/ag-multi-account-switchboard/main/assets/usage-sidebar.png" alt="Usage Stats" width="180"/><br/><sub><b>Usage Stats Heatmap</b></sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/context-detail.png" alt="Context Detail" width="280"/><br/><sub><b>Context Detail</b></sub></td>
-    <td align="center"><img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/usage-panel-1.png" alt="Dashboard Top" width="282"/><br/><sub><b>Dashboard Top</b></sub></td>
-    <td align="center"><img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/usage-panel-2.png" alt="Dashboard Bottom" width="282"/><br/><sub><b>Dashboard Bottom</b></sub></td>
+    <td align="center" colspan="1"><img src="https://raw.githubusercontent.com/wellthewell/ag-multi-account-switchboard/main/assets/context-detail.png" alt="Context Detail" width="380"/><br/><sub><b>Deep Context X-Ray Inspection</b></sub></td>
+    <td align="center" colspan="2"><img src="https://raw.githubusercontent.com/wellthewell/ag-multi-account-switchboard/main/assets/usage-panel-1.png" alt="Analytics Dashboard" width="380"/><br/><sub><b>Full Historical Usage & Cost Analytics</b></sub></td>
   </tr>
 </table>
 
-<p align="center">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey?logo=apple"/>
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-blue"/>
-  <img alt="Version" src="https://img.shields.io/badge/version-3.2.1-green"/>
-</p>
+---
 
-> **🖥️ Platform Support** — macOS is fully tested. Linux and Windows paths are included based on standard Antigravity installation locations and have not been validated yet.
+## ⚡ Why AG Switchboard?
+
+Antigravity gives you cutting-edge AI orchestration, but managing multiple quotas, unmasking cryptic models, and tracking token burn across both IDE and CLI sessions can feel like flying blind.
+
+**AG Switchboard** solves this with a unified, high-performance cockpit:
+- 🔄 **Frictionless Multi-Account Switching** — Switch active accounts in 1 click without messing with web logins or credential files.
+- ⏱️ **Live Quota HUD & Reset Timers** — Track rate limits across every model tier with host-managed precision intervals (30s, 1m, 2m, 5m).
+- 🧠 **Context Window Intelligence** — See exactly what consumes your active token window (System Prompt, MCP Tools, Skills, Rules, User Input).
+- 📊 **Offline SQLite Conversation Store Analytics (v3.3+)** — Directly decodes Antigravity's local conversation store (`conversations/*.db`). Covers both the IDE and the `agy` command-line client, sub-agent runs, true model names, and live LiteLLM pricing.
+- 🛡️ **Conversation Guard** — Detects SQLite index desyncs and protects against losing chat history during crashes.
 
 ---
 
-## ✨ Features at a Glance
+## ✨ Features
 
-The panel has **three tabs** in the sidebar — Accounts, Token Budget, and Usage Stats — plus a full-width **Context Window Detail** editor panel accessible via "See All →".
+### 1. 📊 Accounts — Live Quota Command Center
 
----
+Monitor all your AI model quotas at a glance with zero lag:
 
-### 📊 Accounts — Live Quota Dashboard
-
-Monitor all your AI model quotas at a glance. Each account shows color-coded progress bars, usage percentages, and reset timers — updated automatically on a configurable schedule (30s / 1m / 2m / 5m).
-
-- **Multi-account tracking** — Unlimited Google accounts monitored simultaneously
-- **One-click switching** — Instantly switch your active IDE account from the panel, no menus or dialogs
-- **Pinned model** — Star your most-used model to always show it in the collapsed account header
-- **Status bar toggles** — Choose which quotas appear in the IDE status bar
-- **AI Credits & Plan Info** — See your tier (Ultra, Premium, Free), AI credits, prompt credits, and flow credits
-- **Auto-sync** — Detects external account switches from the IDE's profile menu within ~1 second
-- **Proactive token renewal** — Automatic access_token refresh before expiry, preventing 401s during long sessions
+* **Unlimited Google Accounts:** Track multiple Google accounts simultaneously with color-coded status badges and reset countdowns.
+* **Instant 1-Click Switching:** Switch your active IDE account directly from the sidebar.
+* **Model Pinning:** Star (★) your primary model to keep it permanently visible in the collapsed header.
+* **Status Bar Integration:** Toggle (●) individual model quotas directly into the VS Code status bar.
+* **Proactive Token Renewal:** Automatically refreshes OAuth tokens before expiration, preventing disruptive 401s mid-session.
+* **Reliable Polling (v3.3.4):** Polling timers run in the extension host, ensuring rate choices (`30s`, `1m`, `2m`, `5m`) persist across restarts and stay active even when the sidebar panel is collapsed.
 
 ---
 
-### 🔑 Token Budget — Context Window Intelligence
+### 2. 🔑 Token Budget & Context Window X-Ray
 
-See exactly what's consuming your context window — live, per-category, with drill-down to individual items.
+Stop wondering why you hit context boundaries. Inspect token consumption in real time:
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/token-budget.png" alt="Token Budget Panel" width="380"/>
-</p>
-
-**Context Budget** — Donut chart showing customization token usage (MCP Tools, Rules, Workflows, Skills) with collapsible category breakdowns. MCP servers expand to show per-tool token costs.
-
-**Active Context** — Real-time view of the current conversation's context window:
-
-- Donut chart with used/total tokens and percentage
-- Category-colored stacked bar (System Prompt, Tools, MCP, User Input, Model Response, File Reads, etc.)
-- Per-category breakdown with item counts, token values, and percentages
-- Completion config badges: Max Output, Temperature, TopK, TopP
-- **"See All →"** button opens the full Context Window Detail panel
-
-**Workspace Context** — All `.agent/` items loaded in the current session: rules, skills, and workflows with trigger modes (`always-on`, `model-decision`, `manual`) and estimated token footprints. Click any item to open it in the editor.
+* **Category Donut & Stacked Bars:** Real-time breakdown of System Prompts, Tools, MCP Tools, User Inputs, Model Responses, and File Reads.
+* **🔥 Heavy Consumer Flags:** Highlights tools, rules, and conversation turns consuming disproportionate amounts of context.
+* **Workspace Extensions (.agent/):** Live view of loaded skills, workflows, and custom rules with estimated token footprints.
+* **Full Context Editor Panel ("See All →"):** Dedicated multi-column editor tab with collapsible syntax tree, step-by-step previews, and 1-click Markdown export.
 
 ---
 
-### 🔍 Context Window Detail — Full Editor Panel
+### 3. 📈 Deep Usage Analytics Engine *(v3.3 Architecture)*
 
-A dedicated editor tab for deep context window analysis. Click **"See All →"** from the sidebar to open.
+Unlike standard stats that rely on the language server's transient memory, AG Switchboard v3.3+ reads directly from Antigravity's local SQLite database store:
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/context-detail.png" alt="Context Window Detail" width="700"/>
-</p>
-
-- **Collapsible tree view** — Every token group (System Prompt, Tools, MCP Tools, Chat Messages) with children and sub-children, each showing token count and percentage
-- **Step preview** — Click any chat step (User Input, Model Response, Command, Code Edit, MCP Tool call) to preview its content inline
-- **Filter toolbar** — Quick filters for All, User, Model, Tools, Files
-- **Expand / Collapse All** — Toggle the entire tree in one click
-- **Export Markdown** — One-click conversation export with Copy to Clipboard and Save As options
-- **Live updates** — Auto-refreshes during active model execution via LiveStream watcher
-- **🔥 badges** — Heaviest token consumers are flagged for quick identification
+* **Complete `agy` CLI & IDE Coverage:** Captures every session on disk, including background `agy` runs and autonomous sub-agent helper trajectories previously hidden from telemetry.
+* **Real Model Names (v3.3.1):** Dynamically resolves cryptic `MODEL_PLACEHOLDER_M<n>` protobuf enums into true vendor names (e.g. Gemini 3.5, 3.6, 3.7 Pro/Flash) by harvesting live quota descriptors.
+* **Accurate Date-Sensitive Pricing:** Integrates live LiteLLM pricing keyed by API model IDs rather than loose display labels, eliminating guessing fallbacks.
+* **Native SQLite Performance:** Native `@vscode/sqlite3` loading drops disk decode overhead from ~9ms to <1ms.
+* **Period-Scoped Heatmaps:** View your activity via GitHub-style contribution heatmaps or hourly distributions, perfectly bucketed to your local calendar timezone.
+* **Data Health Monitor:** Transparent dashboard card reporting conversations scanned, unreadable items, unpriced models, and verified language server cross-checks.
 
 ---
 
-### 🛡️ Conversation Guard — Lost Conversation Recovery
+### 4. 🛡️ Conversation Guard
 
-Antigravity can silently lose conversations from the sidebar after crashes or multi-window usage. The Conversation Guard detects these orphaned conversations by comparing `.pb` files on disk against the sidebar index, and offers a one-click fix.
+Antigravity stores sessions as SQLite `.db` databases. If an unexpected crash or multi-window conflict desyncs the sidebar index, Conversation Guard detects the orphaned files:
 
-- **Automatic detection** — Runs 15 seconds after startup, comparing disk state vs. sidebar index
-- **Expandable warning banner** — Shows exactly which conversations are missing, with resolved titles and dates
-- **One-click fix** — Spawns a detached worker that rebuilds the sidebar index after AG quits, then auto-relaunches the IDE
-- **Title resolution** — Recovers conversation titles from LS trajectory data, brain markdown files, or transcript logs
-- **Safe** — Creates a backup before modifying the index. Existing metadata (titles, timestamps) is preserved.
+* **Auto-Discovery:** Compares disk storage against the sidebar index automatically.
+* **Safe Rebuilds:** Indexes orphaned sessions with full title resolution while creating safety backups (`trajectorySummaries_backup.txt`).
+* **Shared-Store Aware (v3.3.2):** Intelligently recognizes symlinked shared stores between CLI and IDE environments without throwing false alarms.
 
 ---
 
-### 📈 Usage Stats — Deep Token Analytics
+## 🚀 Installation
 
-Track token usage and estimated costs across **every** Antigravity conversation you've ever had. Data is cached to disk for instant load, with response-aware deduplication so totals stay stable when Antigravity reports the same model response through multiple local telemetry streams.
+### Option A: Install from Release VSIX (Recommended)
 
-**Sidebar (compact dashboard):**
+1. Download the latest **`ag-multi-account-switchboard-3.3.4.vsix`** from [GitHub Releases](https://github.com/wellthewell/ag-multi-account-switchboard/releases/latest).
+2. Install via terminal:
+   ```bash
+   code --install-extension ag-multi-account-switchboard-3.3.4.vsix
+   ```
+   *Or in Antigravity IDE:* Open the Extensions panel (`Cmd+Shift+X` / `Ctrl+Shift+X`) → click `...` in the top right → **Install from VSIX...**.
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/usage-sidebar.png" alt="Usage Stats Sidebar" width="380"/>
-</p>
+### Option B: Build from Source
 
-- Hero KPIs: Total Tokens + Estimated Cost
-- Token breakdown chips: Input, Cache, Output, Reasoning
-- Response-aware cache rebuilds for accurate all-time totals after telemetry schema changes
-- Time range selector (24h / 7d / 30d / All Time)
-- Activity heatmap (GitHub contribution style) or hourly pattern (24h mode)
-- Top models with stacked token bars
-- Monthly cost breakdown with Input/Cache/Output bars
-
-**Full dashboard (editor tab) — click "Open Full Dashboard →":**
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/usage-panel-1.png" alt="Usage Stats Full Dashboard — Top" width="700"/>
-</p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/erennyuksell/ag-multi-account-switchboard/main/assets/usage-panel-2.png" alt="Usage Stats Full Dashboard — Bottom" width="700"/>
-</p>
-
-- 9 KPI cards: Input, Cache, Output, Total, API Calls, Est. Cost, Days Active, Avg/Call, Cache Rate
-- Model distribution with per-model token breakdowns
-- Activity contribution grid with peak day indicator
-- Weekly pattern (Mon–Sun) with weekday/weekend split
-- Monthly stacked bar chart with yearly cost totals
-- Estimated API cost table per model (Input, Cache, Output, Reasoning, Total)
-- Top conversations ranked by cost
+```bash
+git clone https://github.com/wellthewell/ag-multi-account-switchboard.git
+cd ag-multi-account-switchboard
+npm install
+npm run compile
+npm run package
+```
 
 ---
 
-## 🏗️ Architecture
+## 📋 Panel Controls & Shortcuts
 
-The extension communicates with **two local Language Server instances** that the Antigravity IDE runs:
-
-| Component | Source | Data |
-|-----------|--------|------|
-| **Workspace LS** | `--workspace_id` process | Quota, token budget, workspace context |
-| **Global LS** | No workspace_id | Cascade trajectory, context window, stream updates |
-
-Server discovery uses PID-based process scanning with `lsof` port resolution (macOS/Linux) or `PowerShell`/`netstat` (Windows). Workspace isolation via `--workspace_id` filtering prevents wrong-LS contamination.
-
-For account switching, the extension uses a **Readiness Gate** (Kubernetes-style probe) to ensure the LS has reconnected its USS IPC channel before sending `registerGdmUser`, preventing silent stale-credential issues.
-
----
-
-## 🚀 Getting Started
-
-### Requirements
-
-- **Antigravity IDE** (reads data from the local Language Server)
-- A Google account with Antigravity access
-- macOS, Linux, or Windows
-
-### Installation
-
-1. Install from the **Open VSX Registry** or **Antigravity Extension Marketplace**
-2. The **Antigravity** icon appears in the Activity Bar
-3. Click it to open the panel — your active account loads automatically
-
-### Adding Accounts
-
-| Button | Action |
-|--------|--------|
-| **`+`** | Add account via Google OAuth |
+| Action / Button | Description |
+| :--- | :--- |
+| **`+`** | Add Google account via OAuth |
 | **`🔑`** | Add account by pasting a refresh token |
+| **★ / ☆** | Pin / Unpin model in the collapsed header |
+| **●** | Toggle model quota display in the IDE status bar |
+| **30s / 1m / 2m / 5m** | Configure persistent host quota refresh intervals |
+| **Open Full Dashboard →** | Open the full-width usage analytics and cost reporting tab |
+| **See All →** | Open the deep Context Window X-Ray inspection panel |
 
 ---
 
-## 📋 Quick Reference
+## 🔒 Privacy & Local Execution
 
-### Panel Controls
-
-| Symbol | Meaning |
-|--------|---------|
-| 🟢 Green dot | Quota > 50% remaining |
-| 🟡 Yellow dot | Quota 20–50% remaining |
-| 🔴 Red dot | Quota < 20% remaining |
-| ★ Gold star | Pinned model — shown in collapsed header |
-| ☆ Outline star | Click to pin this model |
-| ● Blue toggle | Model visible in status bar |
-
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `AG Switchboard: Refresh Quota` | Manually trigger a quota refresh |
-| `AG Switchboard: Add Account` | Add via Google OAuth |
-| `AG Switchboard: Add Account via Token` | Add by pasting a refresh token |
-| `AG Switchboard: Remove Account` | Remove a tracked account |
-| `AG Switchboard: Open Usage Statistics` | Open the full usage dashboard |
-| `AG Switchboard: Fix Missing Conversations` | Detect and fix orphaned conversations |
-
-### Configuration
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Refresh interval | Set via header buttons (30s / 1m / 2m / 5m) | `1m` |
-| Pinned model | Click ☆ on any model row | none |
-| Status bar models | Toggle ● switch on each model | off |
-| `ag-switchboard.modelPricing` | Per-model pricing for cost estimation (per 1M tokens) | Built-in defaults |
+* **Zero Cloud Telemetry:** No tracking, no external analytic beacons, and no proprietary servers.
+* **Local Keychain:** OAuth credentials are stored exclusively in VS Code's encrypted `SecretStorage` (macOS Keychain, Linux libsecret, Windows Credential Vault).
+* **Direct Local I/O:** All conversation analysis and context budgeting happens on your local machine.
 
 ---
 
-## 🔒 Privacy & Security
+## 📜 Lineage & Attribution
 
-- **OAuth tokens** stored in VS Code's encrypted `SecretStorage` (macOS Keychain / Windows Credential Store / Linux libsecret)
-- Quota data fetched directly from Google's Antigravity API using your own credentials
-- Token budget, context window, and workspace context read from the **local** Language Server — no network requests leave your machine
-- Usage stats aggregated from local conversation data on disk
-- **No telemetry. No external servers. All data stays local.**
+This project is actively maintained and evolved by **[Well](https://github.com/wellthewell)**.
 
----
+It originated as a fork of the excellent [`ag-multi-account-switchboard`](https://github.com/erennyuksell/ag-multi-account-switchboard) created by **[Eren Yüksel](https://github.com/erennyuksell)**. 
 
-## 🐛 Troubleshooting
-
-| Issue | Fix |
-|-------|-----|
-| **"Request timed out"** on a tracked account | Remove and re-add the account to refresh OAuth tokens |
-| **"Server Not Found"** | Ensure the Antigravity Language Server is running. Tracked account quotas work independently |
-| **Account switch not reflected** | The panel watches for changes automatically. If delayed, click ↺ |
-| **Context window empty** | The Dual-LS discovery may need a moment. Click Refresh or wait for auto-sync |
-| **Windows: token budget not showing** | Ensure LS is running. The extension uses PowerShell for process discovery |
-| **Missing conversations** | The Conversation Guard auto-detects this. Click "Fix Now" in the warning banner, or run `AG Switchboard: Fix Missing Conversations` from the command palette |
-
----
-
-## 📝 Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+Major evolutions in this edition include:
+- Complete migration from language server querying to direct Antigravity SQLite store decoding (`conversations/*.db`).
+- Comprehensive telemetry tracking for `agy` CLI sessions and sub-agent helper tasks.
+- Dynamic model label learning from live server quota responses.
+- Persistent extension-host timer architecture.
+- Full local timezone alignment and global deduplication.
 
 ---
 
 ## 📄 License
 
-MIT © [Eren](https://github.com/erennyuksell) — see [LICENSE](LICENSE) for details.
-
----
-
-<p align="center">
-  Built for the Antigravity IDE ecosystem.<br/>
-  Made with ☕ by <a href="https://github.com/erennyuksell">Eren</a>
-</p>
+Distributed under the [MIT License](LICENSE).  
+Copyright © 2026 Well ([@wellthewell](https://github.com/wellthewell)) & original contributors.

@@ -40,7 +40,17 @@ export function discoverClaudeRoots(
 /**
  * The identity file's position depends on how the root was configured:
  * INSIDE when CLAUDE_CONFIG_DIR is set, ADJACENT in the default layout.
- * Verified against Claude Code 2.1.263. Both must be tried.
+ * Verified against Claude Code 2.1.263.
+ *
+ * File PRESENCE determines which layout the root uses. File ABSENCE means
+ * "wrong layout, try the other location." If the file exists (whether it
+ * parses, whether it holds an account), the layout is confirmed and fallback
+ * must not occur — even if the file is malformed or account-less.
+ *
+ * This prevents cross-root identity misattribution: if a CLAUDE_CONFIG_DIR
+ * root like ~/.claude-alt has its own .claude.json but no account, and the
+ * default ~/.claude has logged in, we must return null, not leak the default
+ * account. File presence is the discriminator.
  */
 export function readAccountForRoot(root: string): ClaudeAccount | null {
     const candidates = [
@@ -51,12 +61,19 @@ export function readAccountForRoot(root: string): ClaudeAccount | null {
     for (const file of candidates) {
         let parsed: any;
         try { parsed = JSON.parse(fs.readFileSync(file, 'utf-8')); }
-        catch { continue; }
+        catch (err: any) {
+            // File genuinely absent (ENOENT) → try the next candidate.
+            // Any other error (parse failure, permission denied, etc.)
+            // means the file exists but is unusable → stop here.
+            if (err.code === 'ENOENT') continue;
+            // File exists but is malformed or unreadable → return null.
+            return null;
+        }
 
         const o = parsed?.oauthAccount;
         // A valid root may legitimately have no oauthAccount — it is written on
         // login, not on init. Not an error, and must not log as one.
-        if (!o?.emailAddress || !o?.accountUuid) continue;
+        if (!o?.emailAddress || !o?.accountUuid) return null;
 
         return {
             email: o.emailAddress,

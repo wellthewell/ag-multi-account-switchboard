@@ -1282,6 +1282,58 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 discoverClaudeRoots(tmp, { CLAUDE_CONFIG_DIR: notARoot }), [],
                 'a dir without projects/ is not a root');
 
+            // ─── Regression: cross-root identity misattribution ───
+            // When a CLAUDE_CONFIG_DIR root (e.g. ~/.claude-alt) has its own
+            // .claude.json but no oauthAccount, the presence check must stop
+            // at that file. It must NOT fall through to the adjacent file
+            // (which would be ~/.claude.json — the default root's identity),
+            // even if the default root has logged in. File presence is the
+            // discriminator: if the root's own file exists, the layout is
+            // confirmed; absence means try the other location.
+            const homeReg = pathA.join(tmp, 'homeReg');
+            const rootNoAcct = pathA.join(homeReg, '.claude-alt');
+            fsA.mkdirSync(pathA.join(rootNoAcct, 'projects'), { recursive: true });
+            // Root's own file: valid JSON, but no oauthAccount
+            fsA.writeFileSync(pathA.join(rootNoAcct, '.claude.json'), JSON.stringify({
+                userID: 'alt-config-id', machineID: 'per-machine-id', firstStartTime: 1,
+            }));
+            // Adjacent file (what would leak if the bug is present):
+            fsA.writeFileSync(pathA.join(homeReg, '.claude.json'), JSON.stringify({
+                oauthAccount: {
+                    emailAddress: 'leaked-default@example.com', accountUuid: 'leaked-uuid-default',
+                },
+            }));
+
+            const regResult = readAccountForRoot(rootNoAcct);
+            assert.strictEqual(regResult, null,
+                'a root whose own .claude.json has no oauthAccount must return null, never the adjacent account — leaked-default@example.com would indicate cross-root misattribution');
+
+            // ─── Damaged file: unparseable JSON in the root ───
+            // If the root's own file exists but is malformed, presence still
+            // confirms the layout. A parse error is not the same as absence.
+            const homeDamaged = pathA.join(tmp, 'homeDamaged');
+            const rootDamaged = pathA.join(homeDamaged, '.claude-damaged');
+            fsA.mkdirSync(pathA.join(rootDamaged, 'projects'), { recursive: true });
+            // Root's own file: malformed JSON
+            fsA.writeFileSync(pathA.join(rootDamaged, '.claude.json'), '{invalid json}');
+            // Adjacent file (what would leak):
+            fsA.writeFileSync(pathA.join(homeDamaged, '.claude.json'), JSON.stringify({
+                oauthAccount: {
+                    emailAddress: 'leaked-from-damaged@example.com', accountUuid: 'leaked-uuid-damaged',
+                },
+            }));
+
+            const damagedResult = readAccountForRoot(rootDamaged);
+            assert.strictEqual(damagedResult, null,
+                'a root whose own .claude.json is unparseable must return null, never the adjacent account — leaked-from-damaged@example.com would indicate the fallback is still being tried');
+
+            // ─── Default layout must still work ───
+            // Root's own file is genuinely absent (no .claude.json inside root).
+            // Fallback to adjacent file must still work.
+            assert.ok(adjacent, 'default layout (absent inside, valid adjacent) must still resolve');
+            assert.strictEqual(adjacent.email, 'adjacent@example.com',
+                'verify Layout B fixture still works — this is the regression check for default layout');
+
             console.log('claude account discovery: all checks passed');
         }
     })();

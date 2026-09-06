@@ -20,6 +20,19 @@ import { createLogger } from '../../utils/logger';
 const log = createLogger('StatsCache');
 
 /**
+ * v2 → v3 is additive: v3 only introduces the optional TokenEntry.accountKey,
+ * which the Claude reader writes and pins resolve for everything older. So this
+ * stamps the version and touches nothing else.
+ *
+ * It exists at all because read() returns null on a version mismatch, and a
+ * rebuild would permanently destroy `claude-code-imported` — 12.94B tokens with
+ * no source files to re-read.
+ */
+export function migrateV2ToV3(data: DiskCacheData): DiskCacheData {
+    return { ...data, schemaVersion: 3 };
+}
+
+/**
  * The cache is a ledger, not a mirror of disk.
  *
  * A conversation present on disk is replaced by its fresh read — the file is
@@ -55,8 +68,12 @@ export class StatsCache {
         try {
             if (!fs.existsSync(this.filePath)) return null;
             const raw = fs.readFileSync(this.filePath, 'utf-8');
-            const data = JSON.parse(raw) as DiskCacheData;
+            let data = JSON.parse(raw) as DiskCacheData;
             if (!data.perConvo || !data.fetchedIds || !data.stats) return null;
+            if (data.schemaVersion === 2) {
+                log.info('Cache read: migrating v2 -> v3 in place (archive preserved)');
+                data = migrateV2ToV3(data);
+            }
             if (data.schemaVersion !== CACHE_SCHEMA_VERSION) {
                 log.info(`Cache read: ignoring schema v${data.schemaVersion ?? 1}; rebuild required for v${CACHE_SCHEMA_VERSION}`);
                 return null;

@@ -9,7 +9,7 @@ import { DeepUsageStats } from '../../types';
 export const BATCH_CONCURRENCY = 50;      // max parallel API calls per chunk
 export const HOT_THRESHOLD_MS = 48 * 3600 * 1000;  // "hot" if modified within 48h
 export const FETCH_TIMEOUT_MS = 6000;     // per-call timeout for metadata/steps fetch
-export const CACHE_SCHEMA_VERSION = 2;
+export const CACHE_SCHEMA_VERSION = 3;
 
 export const EP = {
     TRAJECTORIES: 'GetAllCascadeTrajectories',
@@ -1053,6 +1053,56 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 'no literal data-ms value may remain in the template');
 
             console.log('poll rates: all checks passed');
+        }
+
+        // ─── v2 → v3 migration preserves the Claude archive ───
+        {
+            const { migrateV2ToV3 } = require('./cache');
+            const ARCHIVE_TOTAL = 12942976240;
+
+            // Minimal stand-in for the real archive: fileless convo, metadata source,
+            // one entry per model-day. Totals are what matter, not the row count.
+            const v2: any = {
+                schemaVersion: 2,
+                perConvo: {
+                    'claude-code-imported': {
+                        entries: [
+                            { responseId: 'cc-claude-opus-4-8-2026-06-05', source: 'metadata',
+                              inp: 0, out: 0, cache: ARCHIVE_TOTAL, cacheWrite: 0, reasoning: 0,
+                              model: 'claude-opus-4-8', provider: 'anthropic', ts: '2026-06-05T12:00:00.000Z' },
+                        ],
+                    },
+                    'some-antigravity-convo': {
+                        entries: [
+                            { responseId: 'ag-1', source: 'metadata', inp: 10, out: 20, cache: 30,
+                              cacheWrite: 40, reasoning: 50, model: 'MODEL_PLACEHOLDER_M20',
+                              provider: 'API_PROVIDER_GOOGLE_GEMINI', ts: '2026-08-01T09:00:00.000Z' },
+                        ],
+                    },
+                },
+                fetchedIds: ['claude-code-imported', 'some-antigravity-convo'],
+                stats: {},
+                updatedAt: '2026-08-14T00:00:00.000Z',
+            };
+
+            const v3 = migrateV2ToV3(JSON.parse(JSON.stringify(v2)));
+
+            assert.strictEqual(v3.schemaVersion, 3, 'migration must stamp v3');
+            assert.ok(v3.perConvo['claude-code-imported'], 'archive convo must survive migration');
+
+            const archived = v3.perConvo['claude-code-imported'].entries;
+            assert.strictEqual(archived.length, 1, 'archive entry count must be preserved');
+            const total = archived.reduce((s: number, e: any) =>
+                s + e.inp + e.out + e.cache + e.cacheWrite + e.reasoning, 0);
+            assert.strictEqual(total, ARCHIVE_TOTAL, 'archive token total must be preserved exactly');
+
+            assert.deepStrictEqual(archived[0], v2.perConvo['claude-code-imported'].entries[0],
+                'migration must not mutate archive entries at all');
+
+            assert.ok(v3.fetchedIds.includes('claude-code-imported'),
+                'archive must stay in fetchedIds or it will be re-fetched and lost');
+
+            console.log('v2->v3 migration: all checks passed');
         }
     })();
 }

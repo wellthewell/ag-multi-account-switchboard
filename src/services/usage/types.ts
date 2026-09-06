@@ -1104,6 +1104,96 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             console.log('v2->v3 migration: all checks passed');
         }
+
+        // ─── read() version gate: v2→v3 upgrade on disk, v3 pass-through, v1/absent rejection ───
+        {
+            const { StatsCache } = require('./cache');
+            const os = require('os'); const fs = require('fs'); const path = require('path');
+            const ARCHIVE_TOTAL = 12942976240;
+
+            // Fixture: same archive and convo shape as the unit test, but this time
+            // written to disk so read() exercises the full gate logic
+            const fixtureBase = {
+                perConvo: {
+                    'claude-code-imported': {
+                        entries: [
+                            { responseId: 'cc-claude-opus-4-8-2026-06-05', source: 'metadata',
+                              inp: 0, out: 0, cache: ARCHIVE_TOTAL, cacheWrite: 0, reasoning: 0,
+                              model: 'claude-opus-4-8', provider: 'anthropic', ts: '2026-06-05T12:00:00.000Z' },
+                        ],
+                    },
+                    'some-antigravity-convo': {
+                        entries: [
+                            { responseId: 'ag-1', source: 'metadata', inp: 10, out: 20, cache: 30,
+                              cacheWrite: 40, reasoning: 50, model: 'MODEL_PLACEHOLDER_M20',
+                              provider: 'API_PROVIDER_GOOGLE_GEMINI', ts: '2026-08-01T09:00:00.000Z' },
+                        ],
+                    },
+                },
+                fetchedIds: ['claude-code-imported', 'some-antigravity-convo'],
+                stats: {},
+                updatedAt: '2026-08-14T00:00:00.000Z',
+            };
+
+            const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-read-gate-'));
+            try {
+                // Case 1: v2 fixture on disk — the gate must route it through migration
+                {
+                    const v2Path = path.join(tmpDir, 'v2.json');
+                    fs.writeFileSync(v2Path, JSON.stringify({ ...fixtureBase, schemaVersion: 2 }), 'utf-8');
+                    class TestCacheV2 extends StatsCache {
+                        get filePath() { return v2Path; }
+                    }
+                    const resultV2 = new TestCacheV2().read();
+                    assert.ok(resultV2, 'v2 fixture read() must return non-null after migration');
+                    assert.strictEqual(resultV2.schemaVersion, 3, 'v2 on disk migrates to schemaVersion 3 in-memory');
+                    assert.ok(resultV2.perConvo['claude-code-imported'], 'archive convo survived the gate');
+                    const archiveV2 = resultV2.perConvo['claude-code-imported'].entries;
+                    assert.strictEqual(archiveV2.length, 1, 'archive entry count preserved through gate');
+                    const totalV2 = archiveV2.reduce((s: number, e: any) =>
+                        s + e.inp + e.out + e.cache + e.cacheWrite + e.reasoning, 0);
+                    assert.strictEqual(totalV2, ARCHIVE_TOTAL, 'archive token total preserved exactly through gate (not dropped by mismatch rejection)');
+                }
+
+                // Case 2: v3 fixture on disk — passes through unchanged
+                {
+                    const v3Path = path.join(tmpDir, 'v3.json');
+                    fs.writeFileSync(v3Path, JSON.stringify({ ...fixtureBase, schemaVersion: 3 }), 'utf-8');
+                    class TestCacheV3 extends StatsCache {
+                        get filePath() { return v3Path; }
+                    }
+                    const resultV3 = new TestCacheV3().read();
+                    assert.ok(resultV3, 'v3 fixture read() must return non-null');
+                    assert.strictEqual(resultV3.schemaVersion, 3, 'v3 passes through unchanged');
+                }
+
+                // Case 3: v1 fixture on disk — rejected (rebuild needed)
+                {
+                    const v1Path = path.join(tmpDir, 'v1.json');
+                    fs.writeFileSync(v1Path, JSON.stringify({ ...fixtureBase, schemaVersion: 1 }), 'utf-8');
+                    class TestCacheV1 extends StatsCache {
+                        get filePath() { return v1Path; }
+                    }
+                    const resultV1 = new TestCacheV1().read();
+                    assert.strictEqual(resultV1, null, 'v1 fixture is rejected (rebuild is required for v1)');
+                }
+
+                // Case 4: schemaVersion absent entirely — rejected (rebuild needed)
+                {
+                    const noVersionPath = path.join(tmpDir, 'no-version.json');
+                    fs.writeFileSync(noVersionPath, JSON.stringify(fixtureBase), 'utf-8');
+                    class TestCacheNoVersion extends StatsCache {
+                        get filePath() { return noVersionPath; }
+                    }
+                    const resultNoVersion = new TestCacheNoVersion().read();
+                    assert.strictEqual(resultNoVersion, null, 'missing schemaVersion is treated as v1 equivalent and rejected (rebuild needed)');
+                }
+            } finally {
+                fs.rmSync(tmpDir, { recursive: true, force: true });
+            }
+
+            console.log('read() version gate: all checks passed');
+        }
     })();
 }
 

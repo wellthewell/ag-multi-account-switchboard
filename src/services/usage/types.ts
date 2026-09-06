@@ -1336,6 +1336,47 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             console.log('claude account discovery: all checks passed');
         }
+
+        // ─── pinned-era backlog attribution ───
+        {
+            const { resolveBacklogAccount } = require('./claude/claudePins');
+
+            // Rule 1 — the archive resolves by identity, not by row date. Its rows span
+            // Jan-Jul and would otherwise straddle the date rules.
+            const arch = resolveBacklogAccount('claude-code-imported', '2026-06-05T12:00:00.000Z');
+            assert.ok(arch, 'archive must resolve');
+            assert.strictEqual(arch.email, 'well.j@honestdocs.co');
+            const archLate = resolveBacklogAccount('claude-code-imported', '2026-07-21T12:00:00.000Z');
+            assert.strictEqual(archLate.email, 'well.j@honestdocs.co',
+                'archive stays well.j even for rows dated after the switch');
+
+            // Rule 3 — transcript era.
+            const live = resolveBacklogAccount('claude:abc', '2026-07-30T10:00:00.000Z');
+            assert.ok(live, 'transcript-era row must resolve');
+            assert.strictEqual(live.email, 'varakorn.j@topgunthailand.com');
+
+            // Rule 2 — defensive: a transcript older than the new account goes to well.j.
+            const old = resolveBacklogAccount('claude:xyz', '2026-05-01T10:00:00.000Z');
+            assert.strictEqual(old.email, 'well.j@honestdocs.co',
+                'a pre-switch transcript must not be attributed to the newer account');
+
+            // The accountCreatedAt guard: nothing predates well.j's own creation.
+            assert.strictEqual(resolveBacklogAccount('claude:xyz', '2024-01-01T00:00:00.000Z'), null,
+                'a row older than every known account is unknown, never guessed');
+
+            // Boundary is inclusive of the created date going forward.
+            assert.strictEqual(
+                resolveBacklogAccount('claude:xyz', '2026-07-26T00:00:00.000Z').email,
+                'varakorn.j@topgunthailand.com', 'the createdAt date itself belongs to the new account');
+            assert.strictEqual(
+                resolveBacklogAccount('claude:xyz', '2026-07-25T23:59:59.000Z').email,
+                'well.j@honestdocs.co', 'the day before belongs to the old account');
+
+            assert.strictEqual(resolveBacklogAccount('claude:xyz', ''), null,
+                'a row with no timestamp is unknown');
+
+            console.log('pinned-era attribution: all checks passed');
+        }
     })();
 }
 

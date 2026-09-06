@@ -63,11 +63,21 @@ export interface TokenEntry {
     model: string;
     provider: string;
     ts: string;  // ISO timestamp
+    /** Provider-scoped account id. Absent means resolve via claudePins, or unknown. */
+    accountKey?: string;
 }
 
 /** Per-conversation cached data */
 export interface ConvoTokenData {
     entries: TokenEntry[];
+}
+
+/** The archive predates the `claude:` prefix and keeps its id forever — renaming it orphans 12.94B tokens. */
+export const LEGACY_CLAUDE_ARCHIVE_ID = 'claude-code-imported';
+
+/** Single source of truth for "is this ledger key a Claude conversation". */
+export function isClaudeConvo(cid: string): boolean {
+    return cid.startsWith('claude:') || cid === LEGACY_CLAUDE_ARCHIVE_ID;
 }
 
 /** Disk cache structure */
@@ -1193,6 +1203,19 @@ if (require.main === module && process.argv.includes('--self-check')) {
             }
 
             console.log('read() version gate: all checks passed');
+        }
+
+        // ─── provider test ───
+        {
+            assert.strictEqual(isClaudeConvo('claude:456d535f-1489-442b-a5dd-8f69c5acfc8e'), true,
+                'prefixed session id is Claude');
+            assert.strictEqual(isClaudeConvo('claude-code-imported'), true,
+                'the legacy archive id is Claude and cannot be renamed');
+            assert.strictEqual(isClaudeConvo('00b78c15-c64b-490f-8dec-7187d9e8c06a'), false,
+                'a bare uuid is an Antigravity conversation');
+            assert.strictEqual(isClaudeConvo('claude-code-something-else'), false,
+                'only the exact legacy id is grandfathered, not any claude-code prefix');
+            console.log('provider test: all checks passed');
         }
     })();
 }

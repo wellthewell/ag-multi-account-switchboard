@@ -176,18 +176,30 @@ Rule 2 is defensive. No transcript on this machine predates 2026-07-30, so it cu
 
 ### 7.3 Discovering accounts
 
-"Every account on the computer" needs care, because the honest finding is that this machine has **one** Claude config root:
+"Every account on the computer" needs care, because the honest finding is that this machine has **one** Claude config root. `~/.claude-science` is a different tool (`operon-cli`) — no `projects/`, no `.claude.json`, no `history.jsonl`.
 
-- `~/.claude` is the only root. `~/.claude-science` is a different tool (`operon-cli`) — no `projects/`, no `.claude.json`, no `history.jsonl`.
-- Two keychain entries exist: `Claude Code-credentials` and `Claude Code-credentials-69ff85f3`. The suffix is unexplained (see §12) — discovery must not assume a single entry, and must never read either blob.
+**The identity file moves depending on how the root was configured.** Verified 2026-09-06 against Claude Code 2.1.263 by running `CLAUDE_CONFIG_DIR=<tmp> claude mcp list`:
 
-Discovery therefore enumerates config roots, not credentials:
+```
+default layout    ~/.claude/          projects/        identity at ~/.claude.json      (ADJACENT, sibling of the root)
+CLAUDE_CONFIG_DIR <dir>/              projects/        identity at <dir>/.claude.json  (INSIDE the root)
+                  <dir>/backups/                       also created
+```
+
+Discovery must therefore try `<root>/.claude.json` **then** `<root>/../.claude.json`. Assuming either one alone misses half the cases.
+
+**A valid root may have no identity at all.** The freshly created root's `.claude.json` contained only `firstStartTime`, `firstStartVersion`, `machineID`, `migrationVersion`, `userID`, and migration flags — **no `oauthAccount`**. That key is written on login, not on init. So "root exists, account unknown" is a legitimate state, not corruption.
+
+`userID` and `machineID` are **not** usable as account keys: the fresh root was assigned its own new `userID`, so they identify a config dir, not a person. `oauthAccount.accountUuid` is the only stable account identifier.
+
+Discovery therefore enumerates config roots, never credentials:
 
 1. `CLAUDE_CONFIG_DIR` if set, else `~/.claude`.
-2. A root is valid if it contains `projects/`. Its identity file is the adjacent `.claude.json`.
-3. Each root yields one *currently active* account; historical accounts for that root come from §7.2.
+2. A root is valid if it contains `projects/`. Resolve identity by trying `<root>/.claude.json`, then `<root>/../.claude.json`.
+3. Each root yields at most one *currently active* account, or `unknown`. Historical accounts come from §7.2.
+4. Deduplicate roots by `accountUuid` where present, by realpath otherwise.
 
-Designed for N roots, expected to find one. No credential access, no keychain reads.
+Designed for N roots, expected to find one. No credential access, no keychain reads — see §12 for why the second keychain entry is not an account.
 
 ## 8. Architecture
 
@@ -273,19 +285,54 @@ Two honesty markers are required, not optional:
 
 | Failure | Behaviour |
 |---------|-----------|
-| `~/.claude.json` missing or unparseable | Discovery yields no active account; ingestion still runs, rows stamped `unknown`. |
+| `.claude.json` missing, unparseable, or lacking `oauthAccount` | Discovery yields no active account; ingestion still runs, rows stamped `unknown`. The third case is normal for a never-logged-in root (§7.3), not an error, and must not log as one. |
+| Identity file in the unexpected position | Try `<root>/.claude.json` then `<root>/../.claude.json`. Only after both miss is the account `unknown`. |
+| A model id resolves to no pricing | Render the row with tokens and calls, cost suppressed. Never render cost as `$0.00`. |
 | A transcript line is truncated mid-write | Skip that line, continue. Never abort a file for one bad line. |
 | `thinking > output_tokens` | Skip the entry, warn once per file. Invariant violated (§6). |
 | Schema bump loses the archive | Guarded by an explicit migration test (§13) asserting 175 entries / 12.94B survive 2→3. |
 | Two roots report the same `accountUuid` | Deduplicate by `accountUuid`, not by root path. |
 | `usage` block absent on an assistant row | Normal — it is a content-block continuation row. Not an error. |
 
-## 12. Open questions
+## 12. Resolved questions
 
-1. **Where does `.claude.json` live when `CLAUDE_CONFIG_DIR` is set** — adjacent to the dir, or inside it? Unverified; affects §7.3 step 2. Resolve by testing, not by assumption.
-2. **What is the `-69ff85f3` keychain suffix?** Likely a per-profile hash. It hints multi-account is supported in a way not yet visible on disk. Worth understanding before claiming "every account on the computer".
-3. **Does `litellmPricing.ts` resolve Claude model ids** (`claude-opus-4-8`, `fable-5`, `claude-sonnet-5`)? Determines whether cost renders or is suppressed for Claude rows.
-4. **Persona linking** (Claude ↔ Google account) — deliberately deferred. Adding it is additive: a nullable `personaId` plus a settings pane. No migration.
+All three blocking questions were settled by test on 2026-09-06 against Claude Code 2.1.263. Findings are folded into §7.3 and §12.3; recorded here so the reasoning is not lost.
+
+### 12.1 Identity file location — RESOLVED
+
+`.claude.json` sits **inside** the root when `CLAUDE_CONFIG_DIR` is set, **adjacent** to it in the default layout. Both must be tried. A fresh root has no `oauthAccount`. See §7.3 for the full result and its consequences.
+
+### 12.2 The `-69ff85f3` keychain entry — NOT AN ACCOUNT
+
+It is a dead artifact, and discovery must ignore it. Evidence:
+
+```
+Claude Code-credentials            cdat 2026-07-27 02:28:44   mdat 2026-09-06 15:58:40   (live, refreshed)
+Claude Code-credentials-69ff85f3   cdat 2026-07-20 09:11:44   mdat 2026-07-20 09:11:49   (5s lifespan, then never)
+```
+
+Created and last modified five seconds apart on Jul 20, untouched for seven weeks since. The unsuffixed entry was created Jul 27 — the day after `varakorn.j`'s account — and is refreshed live. The suffix matched none of 40 hash combinations (md5/sha1/sha256/sha512 over ten candidate paths, emails, account and org UUIDs), and creating a fresh config root did **not** produce a new keychain entry, so the suffix is not a per-root hash written at init.
+
+Conclusion: a one-off from the `well.j` era, most likely an abandoned login attempt. **Enumerating keychain entries would report a phantom account.** Config roots are the only account source. The suffix scheme remains unexplained and is immaterial to this design.
+
+### 12.3 Pricing coverage — RESOLVED, one fix needed
+
+Replicating `normalize()`, `buildAliases()` and `resolveLiteLlmPricing()` against the live LiteLLM catalog (3,818 entries) over the ten Claude model ids present in the data: **9 of 10 resolve exactly.**
+
+```
+claude-opus-4-8 / 4-7 / 4-6 / opus-5      exact    $5.00 / $25.00 per Mtok
+claude-sonnet-4-6 / sonnet-4-5-20250929   exact    $3.00 / $15.00
+claude-sonnet-5                           exact    $2.00 / $10.00
+claude-haiku-4-5-20251001                 exact    $1.00 /  $5.00
+claude-fable-5-1                          exact   $10.00 / $50.00
+fable-5                                   *** UNRESOLVED ***
+```
+
+`fable-5` is the bare id, missing the vendor prefix; the catalog has `claude-fable-5`. It carries **320.8M tokens** in the archive, so it is not negligible. Fix is one line in `normalize()` or a lookup alias: bare `fable-*` → `claude-fable-*`. This belongs in `feat/claude-panel` alongside cost rendering, with a test asserting all ten ids resolve.
+
+## 12.4 Deferred
+
+**Persona linking** (Claude ↔ Google account) — decision 1. Additive when wanted: a nullable `personaId` plus a settings pane, no migration.
 
 ## 13. Testing
 
@@ -297,6 +344,8 @@ Following the existing `types.ts` self-check pattern — `assert`-based, runnabl
 4. **Archive survives the schema bump** — load a v2 fixture containing `claude-code-imported`, migrate to v3, assert 175 entries and 12,942,976,240 total tokens.
 5. **Pinned-era guard** — a row dated before `accountCreatedAt` is never attributed to that account; it resolves to the earlier era or `unknown`.
 6. **Provider partition** — a ledger with both providers produces separate totals and never one summed headline.
+7. **Pricing resolution** — all ten Claude model ids in §12.3 resolve, `fable-5` included. Guards the prefix normalization against a future catalog rename.
+8. **Identity file discovery** — a root with the identity file inside resolves; a root with it adjacent resolves; a root with neither yields `unknown` without logging an error.
 
 Test 4 is the one that protects irreplaceable data and should be written first.
 

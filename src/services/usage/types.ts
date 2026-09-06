@@ -1384,6 +1384,88 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             console.log('pinned-era attribution: all checks passed');
         }
+
+        // ─── Claude transcript reader ───
+        {
+            const { readClaudeTranscript } = require('./claude/claudeReader');
+            const fsR = require('fs');
+            const pathR = require('path');
+            const osR = require('os');
+
+            const dir = fsR.mkdtempSync(pathR.join(osR.tmpdir(), 'ag-claude-reader-'));
+            const file = pathR.join(dir, 'session-1.jsonl');
+
+            const row = (o: any) => JSON.stringify(o);
+            const usage = (over: any = {}) => Object.assign({
+                input_tokens: 100, output_tokens: 1000,
+                cache_read_input_tokens: 50000, cache_creation_input_tokens: 2000,
+                output_tokens_details: { thinking_tokens: 400 },
+            }, over);
+
+            fsR.writeFileSync(file, [
+                // A three-row turn sharing one requestId: thinking, text, then tool_use.
+                row({ type: 'assistant', requestId: 'req-1', timestamp: '2026-08-01T10:00:00.000Z',
+                      message: { model: 'claude-opus-4-8', usage: usage(),
+                                 content: [{ type: 'thinking', thinking: 'x' }] } }),
+                row({ type: 'assistant', requestId: 'req-1', timestamp: '2026-08-01T10:00:01.000Z',
+                      message: { model: 'claude-opus-4-8', usage: usage(),
+                                 content: [{ type: 'text', text: 'hi' }] } }),
+                row({ type: 'assistant', requestId: 'req-1', timestamp: '2026-08-01T10:00:02.000Z',
+                      message: { model: 'claude-opus-4-8', usage: usage(),
+                                 content: [{ type: 'tool_use', name: 'Bash' }] } }),
+                // A second, genuinely separate call.
+                row({ type: 'assistant', requestId: 'req-2', timestamp: '2026-08-01T10:01:00.000Z',
+                      message: { model: 'claude-sonnet-5',
+                                 usage: usage({ output_tokens: 500, output_tokens_details: undefined }),
+                                 content: [{ type: 'text', text: 'done' }] } }),
+                // Non-assistant rows and a tool_result user row are not calls.
+                row({ type: 'user', timestamp: '2026-08-01T10:00:30.000Z',
+                      message: { content: [{ type: 'tool_result', content: 'ok' }] } }),
+                row({ type: 'last-prompt', leafUuid: 'x', sessionId: 'session-1' }),
+                // Synthetic model rows are not billable calls.
+                row({ type: 'assistant', requestId: 'req-3', timestamp: '2026-08-01T10:02:00.000Z',
+                      message: { model: '<synthetic>', usage: usage(), content: [] } }),
+                // Invariant violation: thinking > output. Must be skipped, not stored.
+                row({ type: 'assistant', requestId: 'req-4', timestamp: '2026-08-01T10:03:00.000Z',
+                      message: { model: 'claude-opus-4-8',
+                                 usage: usage({ output_tokens: 10, output_tokens_details: { thinking_tokens: 999 } }),
+                                 content: [] } }),
+                // A truncated line mid-write must not abort the file.
+                '{"type":"assistant","requestId":"req-5","mess',
+                '',
+            ].join('\n'));
+
+            const entries = await readClaudeTranscript(file);
+
+            assert.strictEqual(entries.length, 2,
+                'one entry per requestId: req-1 collapses 3 rows, req-2 is separate, req-3/4/5 excluded');
+
+            const e1 = entries.find((e: any) => e.responseId === 'req-1');
+            assert.ok(e1, 'req-1 must be present');
+            assert.strictEqual(e1.model, 'claude-opus-4-8');
+            assert.strictEqual(e1.provider, 'anthropic');
+            assert.strictEqual(e1.inp, 100);
+            assert.strictEqual(e1.cache, 50000);
+            assert.strictEqual(e1.cacheWrite, 2000);
+
+            // The normalization: thinking is a SUBSET of output_tokens, so it is split
+            // out rather than added. out + reasoning must equal the reported output.
+            assert.strictEqual(e1.reasoning, 400, 'thinking becomes reasoning');
+            assert.strictEqual(e1.out, 600, 'out is output minus thinking');
+            assert.strictEqual(e1.out + e1.reasoning, 1000,
+                'out + reasoning must reconstruct the reported output_tokens exactly');
+
+            const e2 = entries.find((e: any) => e.responseId === 'req-2');
+            assert.strictEqual(e2.reasoning, 0, 'absent output_tokens_details means zero reasoning');
+            assert.strictEqual(e2.out, 500, 'and out is the full output');
+
+            assert.ok(!entries.some((e: any) => e.responseId === 'req-4'),
+                'an entry violating thinking <= output must be skipped');
+            assert.ok(!entries.some((e: any) => e.model === '<synthetic>'),
+                'synthetic rows are not billable calls');
+
+            console.log('claude transcript reader: all checks passed');
+        }
     })();
 }
 

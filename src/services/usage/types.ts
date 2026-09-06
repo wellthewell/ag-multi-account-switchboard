@@ -1343,12 +1343,19 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             // Rule 1 — the archive resolves by identity, not by row date. Its rows span
             // Jan-Jul and would otherwise straddle the date rules.
-            const arch = resolveBacklogAccount('claude-code-imported', '2026-06-05T12:00:00.000Z');
+            const arch = resolveBacklogAccount(LEGACY_CLAUDE_ARCHIVE_ID, '2026-06-05T12:00:00.000Z');
             assert.ok(arch, 'archive must resolve');
             assert.strictEqual(arch.email, 'well.j@honestdocs.co');
-            const archLate = resolveBacklogAccount('claude-code-imported', '2026-07-21T12:00:00.000Z');
+            const archLate = resolveBacklogAccount(LEGACY_CLAUDE_ARCHIVE_ID, '2026-07-21T12:00:00.000Z');
             assert.strictEqual(archLate.email, 'well.j@honestdocs.co',
                 'archive stays well.j even for rows dated after the switch');
+
+            // Rule 1 proves precedence: same archive ID at a post-switch date. Without rule 1,
+            // the from-rule would match instead and return varakorn. This assertion fails if
+            // identity precedence did not take effect.
+            const archPostSwitch = resolveBacklogAccount(LEGACY_CLAUDE_ARCHIVE_ID, '2026-09-01T12:00:00.000Z');
+            assert.strictEqual(archPostSwitch.email, 'well.j@honestdocs.co',
+                'archive identity takes precedence over date rules — post-switch timestamp would resolve to varakorn.j if rule 1 is broken');
 
             // Rule 3 — transcript era.
             const live = resolveBacklogAccount('claude:abc', '2026-07-30T10:00:00.000Z');

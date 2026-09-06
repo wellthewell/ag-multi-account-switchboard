@@ -1217,6 +1217,73 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 'only the exact legacy id is grandfathered, not any claude-code prefix');
             console.log('provider test: all checks passed');
         }
+
+        // ─── Claude account discovery ───
+        {
+            const { discoverClaudeRoots, readAccountForRoot } = require('./claude/claudeAccounts');
+            const fsA = require('fs');
+            const pathA = require('path');
+            const osA = require('os');
+
+            const tmp = fsA.mkdtempSync(pathA.join(osA.tmpdir(), 'ag-claude-accounts-'));
+
+            // Layout A — CLAUDE_CONFIG_DIR style: identity INSIDE the root.
+            const rootInside = pathA.join(tmp, 'inside');
+            fsA.mkdirSync(pathA.join(rootInside, 'projects'), { recursive: true });
+            fsA.writeFileSync(pathA.join(rootInside, '.claude.json'), JSON.stringify({
+                oauthAccount: {
+                    emailAddress: 'inside@example.com', accountUuid: 'uuid-inside',
+                    organizationUuid: 'org-inside', seatTier: 'team_tier_1',
+                    accountCreatedAt: '2026-07-26T19:18:37.058600Z',
+                },
+            }));
+
+            // Layout B — default style: identity ADJACENT to the root.
+            const homeB = pathA.join(tmp, 'homeB');
+            const rootAdjacent = pathA.join(homeB, '.claude');
+            fsA.mkdirSync(pathA.join(rootAdjacent, 'projects'), { recursive: true });
+            fsA.writeFileSync(pathA.join(homeB, '.claude.json'), JSON.stringify({
+                oauthAccount: { emailAddress: 'adjacent@example.com', accountUuid: 'uuid-adjacent' },
+            }));
+
+            // Layout C — a valid root that was never logged into: no oauthAccount.
+            const rootFresh = pathA.join(tmp, 'fresh');
+            fsA.mkdirSync(pathA.join(rootFresh, 'projects'), { recursive: true });
+            fsA.writeFileSync(pathA.join(rootFresh, '.claude.json'), JSON.stringify({
+                userID: 'per-config-dir-id', machineID: 'per-machine-id', firstStartTime: 1,
+            }));
+
+            // Layout D — not a Claude root at all (no projects/).
+            const notARoot = pathA.join(tmp, 'operon');
+            fsA.mkdirSync(notARoot, { recursive: true });
+            fsA.writeFileSync(pathA.join(notARoot, 'operon-cli.db'), 'x');
+
+            const inside = readAccountForRoot(rootInside);
+            assert.ok(inside, 'identity inside the root must resolve');
+            assert.strictEqual(inside.email, 'inside@example.com');
+            assert.strictEqual(inside.accountUuid, 'uuid-inside');
+            assert.strictEqual(inside.accountCreatedAt, '2026-07-26T19:18:37.058600Z');
+
+            const adjacent = readAccountForRoot(rootAdjacent);
+            assert.ok(adjacent, 'identity adjacent to the root must resolve');
+            assert.strictEqual(adjacent.email, 'adjacent@example.com');
+
+            assert.strictEqual(readAccountForRoot(rootFresh), null,
+                'a never-logged-in root has no account, and that is not an error');
+
+            // CLAUDE_CONFIG_DIR wins when set and valid.
+            assert.deepStrictEqual(
+                discoverClaudeRoots(homeB, { CLAUDE_CONFIG_DIR: rootInside }), [rootInside],
+                'CLAUDE_CONFIG_DIR takes precedence');
+            assert.deepStrictEqual(
+                discoverClaudeRoots(homeB, {}), [rootAdjacent],
+                'default root is <home>/.claude');
+            assert.deepStrictEqual(
+                discoverClaudeRoots(tmp, { CLAUDE_CONFIG_DIR: notARoot }), [],
+                'a dir without projects/ is not a root');
+
+            console.log('claude account discovery: all checks passed');
+        }
     })();
 }
 

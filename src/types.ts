@@ -1,5 +1,6 @@
 import type { TokenBaseData, WorkspaceContextData } from './services/tokenBase';
 import type { UsageHealth } from './shared/usage-components';
+import type { ConvoTokenData } from './services/usage/types';
 
 /** Tracked account metadata (stored in globalState) */
 export interface TrackedAccount {
@@ -301,4 +302,39 @@ export interface DeepUsageStats {
      * first store-path refresh completes.
      */
     health?: UsageHealth;
+    /**
+     * The raw ledger and title map this stats object was built from —
+     * attached by aggregateFromPerConvo itself (see its own doc comment) so
+     * the detail panel can compute its own per-provider split
+     * (aggregateByProvider) and Claude account facet (accountFacetFor)
+     * in-process, without a second disk read or any change to
+     * services/usage/index.ts.
+     *
+     * `import type` above keeps this a compile-time-only reference — it does
+     * not pull services/usage/types.ts (or its fs-touching neighbours) into
+     * the webview bundle.
+     *
+     * NEVER send a DeepUsageStats carrying these fields across a
+     * `webview.postMessage` call: perConvo is already the large majority of
+     * the on-disk cache (measured ~95% of file size), and postMessage would
+     * ship it whole to the sidebar webview on every update. StatsCache.write
+     * strips both before persisting to disk, and QuotaViewProvider strips
+     * both before every postMessage that carries usage stats — see
+     * `stripLedgerFields` below. Only the detail panel (usageStatsPanel.ts)
+     * may read these fields, since it never sends the stats object itself
+     * across a webview boundary — only pre-rendered HTML strings.
+     */
+    perConvo?: Record<string, ConvoTokenData>;
+    titleMap?: Map<string, string>;
+}
+
+/**
+ * Strip the two fields above before a DeepUsageStats crosses a boundary that
+ * must not carry the raw ledger: disk persistence (StatsCache.write) or a
+ * webview postMessage (QuotaViewProvider). Returns a shallow copy; the input
+ * object — and the panel's own reference to it — is left untouched.
+ */
+export function stripLedgerFields(stats: DeepUsageStats): DeepUsageStats {
+    const { perConvo, titleMap, ...rest } = stats;
+    return rest;
 }

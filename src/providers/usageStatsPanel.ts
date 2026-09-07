@@ -9,17 +9,27 @@
 import * as vscode from 'vscode';
 import { DeepUsageStats } from '../types';
 import { createLogger } from '../utils/logger';
-import { fmtBig, fmtNum, fmtShortDate, escHtml, getNonce, gridMode } from '../shared/helpers';
+import { escHtml, getNonce, gridMode } from '../shared/helpers';
 import {
     renderDailyGrid, renderDayStrip, renderHourlyHeatmap,
     renderModelBreakdown, renderCostEstimate,
-    rangeLabel, calculateTotalCost, fmtDollar, renderMonthlySummary,
+    rangeLabel, calculateTotalCost, renderMonthlySummary,
     getAvailableYears, renderYearSelector, getMonthlyYears,
     renderWeekdayChart, renderEnrichedCascadeList,
     renderEmptyRange, renderHealthCard,
+    accountFacetFor, renderProviderSection, setClaudeAccountResolver,
 } from '../shared/usage-components';
+import { aggregateByProvider } from '../services/usage/aggregator';
+import type { ConvoTokenData } from '../services/usage/types';
+import { discoverClaudeAccounts } from '../services/usage/claude/claudeAccounts';
 
 const log = createLogger('UsagePanel');
+
+// Registers the real, fs-touching account lookup with the (webview-bundled)
+// usage-components module — see setClaudeAccountResolver's own doc comment
+// for why this cannot be a static import there. Module-scope, run once:
+// this file is extension-host only, never bundled into the webview.
+setClaudeAccountResolver(discoverClaudeAccounts);
 
 export class UsageStatsPanel {
     public static currentPanel: UsageStatsPanel | undefined;
@@ -212,7 +222,7 @@ export class UsageStatsPanel {
         const rl = rangeLabel(range);
 
         return [
-            this.renderHeroKpi(s),
+            this.renderProviderSections(s),
             this.renderRangeBar(),
             // ── Bento Grid ──
             '<div class="up-bento">',
@@ -234,46 +244,36 @@ export class UsageStatsPanel {
         ].join('');
     }
 
-    // ─── Hero KPI (Cost + Tokens prominent, rest as chips) ───
+    // ─── Provider Sections (replaces the old combined hero) ───
 
-    private renderHeroKpi(s: DeepUsageStats): string {
-        const totalCost = calculateTotalCost(s.models);
-        const totalReas = s.totalReasoning || 0;
+    /**
+     * Two independent sections — Claude Code and Antigravity — each with its
+     * own totals and (for Claude) its per-account breakdown. Deliberately no
+     * combined headline: on the real ledger this measured 96.7% Claude, and a
+     * single summed number would describe neither tool. See
+     * renderProviderSection's own doc comment.
+     */
+    private renderProviderSections(s: DeepUsageStats): string {
+        // The raw ledger and title map this stats object was aggregated from
+        // — see DeepUsageStats.perConvo/.titleMap. Always present once s
+        // comes from aggregateFromPerConvo (every real code path); the
+        // fallbacks only guard a stats object that somehow arrived some
+        // other way.
+        const perConvo = (s.perConvo ?? {}) as Record<string, ConvoTokenData>;
+        const titleMap = s.titleMap ?? new Map<string, string>();
 
-        let html = '<div class="up-hero-section">';
+        // Deliberately all-time (''), not this.currentRange: the provider
+        // split and account facet answer "who did this work and how does it
+        // break down by account", independent of whichever window the rest
+        // of the dashboard's cards are currently filtered to. Re-deriving
+        // getFilteredStats's exact range-filter window here would duplicate
+        // that logic outside services/usage/index.ts, which is out of scope
+        // for this change.
+        const split = aggregateByProvider(perConvo, titleMap, '');
+        const claudeFacet = accountFacetFor(perConvo);
 
-        // Hero pair: Cost + Tokens
-        html += '<div class="up-hero-pair">';
-        html += '<div class="up-hero-card up-hero-cost">';
-        html += `<div class="up-hero-val">${fmtDollar(totalCost)}</div>`;
-        html += '<div class="up-hero-label">Estimated Cost</div>';
-        html += '</div>';
-        html += '<div class="up-hero-card up-hero-tokens">';
-        html += `<div class="up-hero-val">${fmtBig(s.totalTokens)}</div>`;
-        html += '<div class="up-hero-label">Total Tokens</div>';
-        html += '</div>';
-        html += '</div>';
-
-        // Secondary chips
-        html += '<div class="up-hero-chips">';
-        html += `<span class="up-chip"><span class="up-chip-dot" style="background:#4f9cf7"></span>${fmtBig(s.totalInput)} <em>in</em></span>`;
-        html += `<span class="up-chip"><span class="up-chip-dot" style="background:#a78bfa"></span>${fmtBig(s.totalCache)} <em>cache</em></span>`;
-        html += `<span class="up-chip"><span class="up-chip-dot" style="background:#4ade80"></span>${fmtBig(s.totalOutput)} <em>out</em></span>`;
-        if (totalReas > 0) {
-            html += `<span class="up-chip"><span class="up-chip-dot" style="background:#f59e0b"></span>${fmtBig(totalReas)} <em>reas.</em></span>`;
-        }
-        html += `<span class="up-chip up-chip-muted">${fmtNum(s.totalCalls)} <em>calls</em></span>`;
-        html += `<span class="up-chip up-chip-muted">${s.daysActive}d <em>active</em></span>`;
-        html += `<span class="up-chip up-chip-muted">${s.cacheRate}% <em>cache rate</em></span>`;
-        html += '</div>';
-
-        // Date range
-        if (s.dateRange?.from) {
-            html += `<div class="up-hero-daterange">${fmtShortDate(s.dateRange.from)} → ${fmtShortDate(s.dateRange.to)}</div>`;
-        }
-
-        html += '</div>';
-        return html;
+        return renderProviderSection('Claude Code', split.claude, claudeFacet)
+            + renderProviderSection('Antigravity', split.antigravity, []);
     }
 
     private renderRangeBar(): string {

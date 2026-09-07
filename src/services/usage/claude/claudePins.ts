@@ -10,7 +10,11 @@
  * dated before an account existed is never attributed to it.
  */
 
-import { LEGACY_CLAUDE_ARCHIVE_ID } from '../types';
+// From ../convoId, not ../types: ../types ends in a --self-check block whose
+// require() calls a bundler resolves eagerly, which breaks the webview build
+// once anything imports resolveBacklogAccount transitively (see
+// usage-components.ts and convoId.ts's own doc comment).
+import { LEGACY_CLAUDE_ARCHIVE_ID } from '../convoId';
 
 export interface PinnedAccount {
     email: string;

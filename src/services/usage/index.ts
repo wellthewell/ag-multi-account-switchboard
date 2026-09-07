@@ -591,8 +591,18 @@ export class UsageStatsService {
             const fetchedIds = [...new Set([...(diskCache?.fetchedIds || []), ...Object.keys(merged)])];
 
             const mtimesForWrite = { ...(diskCache?.mtimes || {}), ...claude.mtimes };
+            // Claude totals land in the ledger here, where previously there
+            // were none — the same "totals before/after are not comparable"
+            // condition countingChangedAt exists to mark. Mirrors
+            // refreshFromStore's own rule exactly: stamp once, only when a
+            // pre-existing cache was loaded and found to be missing it. A
+            // truly first-ever cold boot (diskCache null) has no "before" to
+            // compare against, so it stays null rather than fabricating one.
+            const countingChangedAt: string | null = diskCache
+                ? (diskCache.countingChangedAt || new Date().toISOString())
+                : null;
             this.cache.write(merged, fetchedIds, stats, titleMap,
-                stepCounts, diskCache?.entryCounts, mtimesForWrite, diskCache?.countingChangedAt);
+                stepCounts, diskCache?.entryCounts, mtimesForWrite, countingChangedAt ?? undefined);
 
             this.deepStatsCache = stats;
             this.currentPerConvo = merged;

@@ -6,10 +6,40 @@
 
 import { fmtNum, fmtBig, fmtShortDate, escHtml, isoDay } from './helpers';
 import { DailyBucket, HourlyBucket, ModelBucket, CascadeBucket, MonthlyBucket, MonthlyModelEntry, ProviderBucket, WeekdayBucket } from '../types';
+import type { DeepUsageStats } from '../types';
 import {
     CASCADE_LIST_LIMIT, CASCADE_TITLE_MAX_LEN,
     CASCADE_ENRICHED_LIMIT, CASCADE_ENRICHED_TITLE_MAX_LEN,
 } from './uiConstants';
+// Runtime imports for the Claude account facet (below).
+//
+// ConvoTokenData is `import type` — erased at compile time, so it cannot
+// affect the webview bundle regardless of what services/usage/types.ts
+// otherwise contains.
+//
+// isClaudeConvo/LEGACY_CLAUDE_ARCHIVE_ID come from ./convoId, NOT from
+// services/usage/types.ts: that file ends in a --self-check block whose
+// require() calls reach fs/path/os/sqlite/the language server client, and
+// esbuild resolves every literal require() it can reach in the AST
+// regardless of the runtime `if (require.main === module)` guard around it
+// — confirmed empirically (`npm run compile:webview` failed with "Could not
+// resolve 'fs'" the moment anything real was imported from that file here).
+// convoId.ts has zero imports and is safe. claudePins.ts was updated to
+// import from convoId.ts too, for the same reason, so resolveBacklogAccount
+// is safe to import directly.
+//
+// discoverClaudeAccounts (services/usage/claude/claudeAccounts.ts) itself
+// touches fs/path/os directly — there is no dependency-free version of it —
+// so it cannot be statically imported here at all. It is registered instead,
+// mirroring setExternalPricingResolver just below: the extension host calls
+// setClaudeAccountResolver once with the real function; accountFacetFor uses
+// it if set, and otherwise still resolves every account's uuid/tokens/calls
+// correctly (see accountFacetFor) — it only loses the human-readable email
+// label for a *stamped* row until the resolver is registered, which the
+// self-check does not assert on.
+import type { ConvoTokenData } from '../services/usage/types';
+import { isClaudeConvo, LEGACY_CLAUDE_ARCHIVE_ID } from '../services/usage/convoId';
+import { resolveBacklogAccount } from '../services/usage/claude/claudePins';
 
 export type UsageTotals = {
     input: number;
@@ -1007,4 +1037,162 @@ export function renderHealthCard(h: UsageHealth): string {
         rows.push(`<div class="uh-note">Counting changed on ${fmtShortDate(h.countingChangedAt)}: recovered sessions the language server could not see, sub-agent runs, local-time day bucketing (previously UTC), global deduplication, and live pricing that had silently never applied are all reflected now. Past figures have been restated — this is not only a change going forward.</div>`);
     }
     return `<div class="up-card up-bento-full"><div class="up-card-hdr">Data health</div>${rows.join('')}</div>`;
+}
+
+// ═══════════════════════════════════════════
+//  Claude Account Facet & Provider Sections
+// ═══════════════════════════════════════════
+
+export interface AccountFacetRow {
+    label: string;
+    accountUuid: string | null;
+    tokens: number;
+    /** null when the underlying rows are day rollups, where a count is meaningless. */
+    calls: number | null;
+    from: string;
+    to: string;
+    note?: string;
+}
+
+/**
+ * Group Claude usage by account.
+ *
+ * Rows read after this feature shipped carry `accountKey`. Older rows do not,
+ * and resolve through claudePins. The archive is a day rollup: one entry per
+ * model per day, so counting its entries yields 175 for six months of work.
+ * That renders as null, never as a number.
+ */
+const ROLLUP_NOTE = 'day rollup — thinking not broken out';
+
+/** What accountFacetFor needs from discoverClaudeAccounts — see the import comment above. */
+export type ClaudeAccountLookup = () => Array<{ email: string; accountUuid: string }>;
+
+/** External account resolver — injected by the extension host at boot (discoverClaudeAccounts). */
+let claudeAccountResolver: ClaudeAccountLookup | null = null;
+
+/**
+ * Register the real discoverClaudeAccounts() (extension-host only, touches
+ * fs/path/os — see the import comment above for why it cannot be imported
+ * directly here). Until this is called, accountFacetFor still resolves every
+ * account's uuid/tokens/calls correctly; it only falls back to the uuid (or
+ * a pinned email, when one applies) instead of a discovered email for a
+ * stamped row's label.
+ */
+export function setClaudeAccountResolver(resolver: ClaudeAccountLookup): void {
+    claudeAccountResolver = resolver;
+}
+
+export function accountFacetFor(
+    perConvo: Record<string, ConvoTokenData>,
+): AccountFacetRow[] {
+    // Stamped rows carry a uuid; look up the email so the panel never shows a raw uuid.
+    const emailByUuid = new Map<string, string>();
+    for (const a of (claudeAccountResolver?.() ?? [])) emailByUuid.set(a.accountUuid, a.email);
+
+    const acc = new Map<string, AccountFacetRow>();
+    // An account whose usage includes any rollup conversation cannot report a
+    // real call count for that portion, so the whole row surrenders the number.
+    const rollupAccounts = new Set<string>();
+
+    for (const [cid, data] of Object.entries(perConvo)) {
+        if (!isClaudeConvo(cid)) continue;
+        const isRollup = cid === LEGACY_CLAUDE_ARCHIVE_ID;
+
+        for (const e of data.entries) {
+            const pinned = resolveBacklogAccount(cid, e.ts);
+            // Load-bearing: resolveBacklogAccount is called even for a row that
+            // already carries an accountKey — but its `email` is used below ONLY
+            // when pinned.accountUuid === uuid. A pinned email is date-derived, so
+            // using it for a stamped row whose uuid it does not match would attach
+            // one person's name to another account's usage. Do not "simplify" this
+            // by skipping the pins lookup when accountKey is present.
+            const uuid = e.accountKey ?? pinned?.accountUuid ?? null;
+            const key = uuid ?? 'unknown';
+            if (isRollup) rollupAccounts.add(key);
+
+            let row = acc.get(key);
+            if (!row) {
+                row = {
+                    // A pinned email may only label the uuid it actually resolved to.
+                    // Falling back to it for a stamped row would attach a date-derived
+                    // name to an account that disagrees with it.
+                    label: (uuid ? emailByUuid.get(uuid) : undefined)
+                        ?? (pinned && pinned.accountUuid === uuid ? pinned.email : undefined)
+                        ?? uuid ?? 'unknown account',
+                    accountUuid: uuid,
+                    tokens: 0,
+                    calls: 0,
+                    from: e.ts, to: e.ts,
+                };
+                acc.set(key, row);
+            }
+
+            row.tokens += e.inp + e.out + e.cache + e.cacheWrite + e.reasoning;
+            if (row.calls !== null) row.calls++;
+            if (e.ts && e.ts < row.from) row.from = e.ts;
+            if (e.ts && e.ts > row.to) row.to = e.ts;
+        }
+    }
+
+    for (const key of rollupAccounts) {
+        const row = acc.get(key);
+        if (row) { row.calls = null; row.note = ROLLUP_NOTE; }
+    }
+
+    return [...acc.values()].sort((a, b) => b.tokens - a.tokens);
+}
+
+/**
+ * One provider block: its own totals, its accounts beneath.
+ *
+ * There is deliberately no cross-provider total anywhere in this component.
+ * On measured data a summed headline is ~97% Claude and describes neither tool.
+ */
+export function renderProviderSection(
+    title: string,
+    stats: DeepUsageStats,
+    facet: AccountFacetRow[],
+): string {
+    if (stats.totalCalls === 0 && stats.totalTokens === 0) return '';
+
+    const day = (ts: string) => (ts ? ts.slice(0, 10) : '—');
+
+    // stats.totalCalls counts raw entries, with no rollup awareness — for a
+    // provider with an account facet, that is the same "175" lie the account
+    // row below exists to suppress, just one level up (measured on the real
+    // ledger: the Claude header would otherwise read "175 calls" for six
+    // months of work, once the rollup archive is the only Claude data
+    // present). Whenever a facet exists, show account count instead of a
+    // call count the header cannot honestly total — the account rows below
+    // are where an honest, per-row call count (or its absence) belongs.
+    // Antigravity has no facet and no rollup risk, so its header keeps the
+    // real call count.
+    const headline = facet.length > 0
+        ? `<span class="up-provider-calls">${facet.length.toLocaleString()} account${facet.length === 1 ? '' : 's'}</span>`
+        : `<span class="up-provider-calls">${stats.totalCalls.toLocaleString()} calls</span>`;
+
+    let html = `<div class="up-provider">`;
+    html += `<div class="up-provider-head">`;
+    html += `<span class="up-provider-name">${escHtml(title)}</span>`;
+    html += `<span class="up-provider-tokens">${fmtBig(stats.totalTokens)}</span>`;
+    html += headline;
+    html += `</div>`;
+
+    for (const row of facet) {
+        // A rollup row has no honest call count. Render an em dash, never a number.
+        const calls = row.calls === null
+            ? `<span class="up-acct-calls up-muted" title="${escHtml(row.note ?? '')}">—</span>`
+            : `<span class="up-acct-calls">${row.calls.toLocaleString()} calls</span>`;
+        const warn = row.note
+            ? ` <span class="up-warn" title="${escHtml(row.note)}">⚠</span>`
+            : '';
+        html += `<div class="up-acct">`;
+        html += `<span class="up-acct-label">${escHtml(row.label)}</span>`;
+        html += `<span class="up-acct-tokens">${fmtBig(row.tokens)}</span>`;
+        html += calls;
+        html += `<span class="up-acct-range">${day(row.from)} – ${day(row.to)}</span>${warn}`;
+        html += `</div>`;
+    }
+
+    return html + `</div>`;
 }

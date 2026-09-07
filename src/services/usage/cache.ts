@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { DeepUsageStats } from '../../types';
+import { DeepUsageStats, stripLedgerFields } from '../../types';
 import {
     CACHE_SCHEMA_VERSION,
     DiskCacheData,
@@ -125,9 +125,15 @@ export class StatsCache {
             for (const [k, v] of titleMap) titleMapObj[k] = v;
             const stepCountsObj: Record<string, number> = {};
             if (stepCounts) { for (const [k, v] of stepCounts) stepCountsObj[k] = v; }
+            // stats may carry .perConvo/.titleMap (see DeepUsageStats and
+            // stripLedgerFields in ../../types) — convenience references for
+            // the panel's per-provider rendering, not for persistence. The
+            // top-level `perConvo` field below is the real, already-persisted
+            // ledger; embedding it a second time inside `stats` would
+            // materially inflate every write for no benefit.
             const data: DiskCacheData = {
                 schemaVersion: CACHE_SCHEMA_VERSION,
-                perConvo, fetchedIds, stats,
+                perConvo, fetchedIds, stats: stripLedgerFields(stats),
                 updatedAt: new Date().toISOString(),
                 titleMap: titleMapObj,
                 stepCounts: stepCounts ? stepCountsObj : undefined,

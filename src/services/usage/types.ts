@@ -72,13 +72,17 @@ export interface ConvoTokenData {
     entries: TokenEntry[];
 }
 
-/** The archive predates the `claude:` prefix and keeps its id forever — renaming it orphans 12.94B tokens. */
-export const LEGACY_CLAUDE_ARCHIVE_ID = 'claude-code-imported';
-
-/** Single source of truth for "is this ledger key a Claude conversation". */
-export function isClaudeConvo(cid: string): boolean {
-    return cid.startsWith('claude:') || cid === LEGACY_CLAUDE_ARCHIVE_ID;
-}
+// Imported (not defined here) and re-exported: this file ends in a
+// --self-check block that require()s extension-host-only modules (fs,
+// sqlite, the language server client, ...), which makes it unsafe for a
+// bundler to resolve on behalf of browser-bundled code. usage-components.ts
+// (bundled into the webview) needs isClaudeConvo/LEGACY_CLAUDE_ARCHIVE_ID, so
+// their canonical definition lives in the dependency-free ./convoId.ts
+// instead — see that file's doc comment. The self-check block below still
+// uses both names directly (unchanged), and every existing `from './types'`
+// import of them elsewhere in the codebase keeps working unchanged too.
+import { isClaudeConvo, LEGACY_CLAUDE_ARCHIVE_ID } from './convoId';
+export { isClaudeConvo, LEGACY_CLAUDE_ARCHIVE_ID };
 
 /** Disk cache structure */
 export interface DiskCacheData {
@@ -2171,6 +2175,148 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 'wrapper counts it twice by design (see aggregateByProvider doc comment)');
 
             console.log('provider partition: all checks passed');
+        }
+
+        // ─── account facet and honesty markers ───
+        {
+            const { accountFacetFor } = require('../../shared/usage-components');
+
+            const entry = (rid: string, ts: string, accountKey?: string) => ({
+                responseId: rid, source: 'metadata', inp: 0, out: 100, cache: 0,
+                cacheWrite: 0, reasoning: 0, model: 'claude-opus-4-8',
+                provider: 'anthropic', ts, accountKey,
+            });
+
+            const perConvo: any = {
+                // Stamped at read time.
+                'claude:sess-1': { entries: [
+                    entry('r1', '2026-08-01T10:00:00.000Z', '49a38d72-c70f-4169-bcf3-bf7f31a5b8f7')] },
+                // Unstamped archive — must resolve through pins, not show as unknown.
+                'claude-code-imported': { entries: [entry('cc-1', '2026-06-01T12:00:00.000Z')] },
+            };
+
+            const rows = accountFacetFor(perConvo);
+
+            const vara = rows.find((r: any) => r.accountUuid === '49a38d72-c70f-4169-bcf3-bf7f31a5b8f7');
+            assert.ok(vara, 'the stamped account appears');
+            assert.strictEqual(vara.tokens, 100);
+            assert.strictEqual(vara.calls, 1, 'a real call count for read-time rows');
+
+            const well = rows.find((r: any) => r.accountUuid === '348cc96d-a86f-4963-9db5-bf1da5ba879a');
+            assert.ok(well, 'the archive resolves to well.j via pins, not to unknown');
+
+            assert.strictEqual(well.calls, null,
+                'the archive is a day rollup — its call count is an artifact and must never render as a number');
+            assert.ok(/thinking/i.test(well.note || ''),
+                'the archive must be marked as not breaking out thinking');
+
+            console.log('account facet: all checks passed');
+        }
+
+        // ─── provider sections & the cost cell: HTML-level honesty markers ───
+        //
+        // The three assertions this section exists for are each individually
+        // prone to passing for the wrong reason (see the review that flagged
+        // this plan's pattern of tests that cannot fail):
+        //   - a rollup row's calls being null passes trivially if the row
+        //     never rendered at all — so this checks the row's label
+        //     actually appears, not just that "175" is absent.
+        //   - "no $0.00" passes trivially if nothing priced rendered at
+        //     all — so this fixture renders a real priced model alongside
+        //     the unresolved one, and checks the priced one's dollar figure
+        //     is genuinely present.
+        //   - "no summed total" needs a positive assertion (an exact count
+        //     of token cells), not just the absence of one string that
+        //     happens not to collide with this fixture's numbers.
+        {
+            const { accountFacetFor, renderProviderSection, renderCostEstimate } =
+                require('../../shared/usage-components');
+            const { aggregateByProvider } = require('./aggregator');
+            const { modelNameFromEnum } = require('./store/enumMap');
+
+            const claudeEntry = (rid: string, ts: string, accountKey?: string) => ({
+                responseId: rid, source: 'metadata', inp: 1000, out: 200, cache: 0,
+                cacheWrite: 0, reasoning: 0, model: 'claude-opus-4-8',
+                provider: 'anthropic', ts, accountKey,
+            });
+            const antigravityEntry = (rid: string, ts: string) => ({
+                responseId: rid, source: 'metadata', inp: 500, out: 50, cache: 0,
+                cacheWrite: 0, reasoning: 0, model: 'MODEL_PLACEHOLDER_M20',
+                provider: 'API_PROVIDER_GOOGLE_GEMINI', ts,
+            });
+
+            // The real archive's actual shape: one entry per model per day,
+            // 175 entries for six months of work. Built out in full (not a
+            // handful of stand-ins) so a regression that prints the raw
+            // entry count instead of an em dash shows up as the literal
+            // digits "175" — not an arbitrarily small number that could
+            // pass the assertion below by coincidence.
+            const rollupEntries: any[] = [];
+            for (let i = 0; i < 175; i++) {
+                const day = String(1 + (i % 28)).padStart(2, '0');
+                const month = String(1 + Math.floor(i / 28)).padStart(2, '0');
+                rollupEntries.push(claudeEntry(`cc-${i}`, `2026-${month}-${day}T12:00:00.000Z`));
+            }
+
+            const perConvo: any = {
+                'claude:sess-1': { entries: [
+                    claudeEntry('r1', '2026-08-01T10:00:00.000Z', '49a38d72-c70f-4169-bcf3-bf7f31a5b8f7')] },
+                'claude-code-imported': { entries: rollupEntries },
+                '00b78c15-c64b-490f-8dec-7187d9e8c06a': { entries: [
+                    antigravityEntry('g1', '2026-08-01T11:00:00.000Z'),
+                    antigravityEntry('g2', '2026-08-01T12:00:00.000Z'),
+                ] },
+            };
+
+            const facet = accountFacetFor(perConvo);
+            const split = aggregateByProvider(perConvo, new Map(), '');
+            const claudeHtml = renderProviderSection('Claude Code', split.claude, facet);
+            const antigravityHtml = renderProviderSection('Antigravity', split.antigravity, []);
+            const combinedHtml = claudeHtml + antigravityHtml;
+
+            // Both sides have real data in this fixture — both sections must render.
+            assert.ok(claudeHtml.includes('Claude Code'), 'the Claude section renders when it has data');
+            assert.ok(antigravityHtml.includes('Antigravity'), 'the Antigravity section renders when it has data');
+
+            // The rollup row must actually be present (not silently dropped —
+            // which would make the "no 175" check below pass for the wrong
+            // reason), and its call count must render as an em dash, never
+            // as the real (dishonest) entry count.
+            assert.ok(claudeHtml.includes('well.j@honestdocs.co'),
+                'the rollup account row renders in the Claude section, not silently dropped');
+            assert.ok(!combinedHtml.includes('175'),
+                'the rollup call count (175 raw entries) must never render as a number anywhere');
+            assert.ok(claudeHtml.includes('—'),
+                'the rollup row renders an em dash for its call count instead');
+
+            // Exactly two provider token totals — one per section — never a
+            // combined third figure summing both providers.
+            const tokenCellCount = (combinedHtml.match(/up-provider-tokens/g) || []).length;
+            assert.strictEqual(tokenCellCount, 2,
+                'exactly two provider token totals render — one per provider, never a combined third');
+
+            console.log('provider sections: all checks passed');
+
+            // Cost cell: a resolved model still prices normally; an
+            // unresolved one is suppressed, never shown as $0.00.
+            const unknownName = modelNameFromEnum(87231);
+            const pricedModel = {
+                displayName: 'Claude Opus 5', rawModel: 'claude-opus-5',
+                input: 10_000_000, output: 2_000_000, cache: 0, cacheWrite: 0, reasoning: 0, calls: 5,
+            };
+            const unpricedModel = {
+                displayName: unknownName, rawModel: unknownName,
+                input: 5_000_000, output: 500_000, cache: 0, cacheWrite: 0, reasoning: 0, calls: 3,
+            };
+            const costHtml = renderCostEstimate([pricedModel, unpricedModel]);
+
+            assert.ok(/\$\d/.test(costHtml), 'the priced model still renders a real dollar figure');
+            assert.ok(!costHtml.includes(unknownName),
+                'the unresolved model is suppressed from the cost table entirely, not rendered with a guessed price');
+            assert.ok(!costHtml.includes('$0.00'),
+                'the string $0.00 never appears — a resolved-but-cheap or unresolved model is blank, never "free"');
+
+            console.log('cost cell honesty: all checks passed');
         }
     })();
 }

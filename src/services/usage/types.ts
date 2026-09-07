@@ -2102,6 +2102,76 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 console.log('pricing resolution: SKIPPED (catalog unavailable — offline?)');
             }
         }
+
+        // ─── provider partition ───
+        {
+            const { aggregateByProvider } = require('./aggregator');
+
+            const entry = (rid: string, ts: string, provider: string, model: string) => ({
+                responseId: rid, source: 'metadata', inp: 1, out: 10, cache: 100,
+                cacheWrite: 5, reasoning: 4, model, provider, ts,
+            });
+
+            const perConvo: any = {
+                'claude:sess-1': { entries: [entry('r1', '2026-08-01T10:00:00.000Z', 'anthropic', 'claude-opus-4-8')] },
+                'claude-code-imported': { entries: [entry('cc-1', '2026-06-01T12:00:00.000Z', 'anthropic', 'claude-opus-4-7')] },
+                '00b78c15-c64b-490f-8dec-7187d9e8c06a': {
+                    entries: [entry('g1', '2026-08-01T11:00:00.000Z', 'API_PROVIDER_GOOGLE_GEMINI', 'MODEL_PLACEHOLDER_M20')] },
+            };
+
+            const split = aggregateByProvider(perConvo, new Map(), '');
+
+            assert.strictEqual(split.claude.totalCalls, 2,
+                'the claude: session and the legacy archive both count as Claude');
+            assert.strictEqual(split.antigravity.totalCalls, 1, 'the bare uuid is Antigravity');
+
+            const per = 1 + 10 + 100 + 5 + 4;
+            assert.strictEqual(split.claude.totalTokens, per * 2);
+            assert.strictEqual(split.antigravity.totalTokens, per);
+
+            // Nothing was lost or double-counted in the partition: the two sides must
+            // account for every entry exactly once.
+            assert.strictEqual(
+                split.claude.totalCalls + split.antigravity.totalCalls, 3,
+                'partition is exhaustive and disjoint');
+
+            // An empty side must be a valid zeroed stats object, not a crash or null.
+            const onlyClaude = aggregateByProvider(
+                { 'claude:x': perConvo['claude:sess-1'] } as any, new Map(), '');
+            assert.strictEqual(onlyClaude.antigravity.totalCalls, 0);
+            assert.strictEqual(onlyClaude.antigravity.totalTokens, 0);
+            assert.ok(Array.isArray(onlyClaude.antigravity.daily), 'zeroed side still has bucket arrays');
+
+            // Documented assumption: responseId spaces are disjoint across providers
+            // (cc-<model>-<date> / req_* for Claude vs opaque base64 like
+            // -0BearmYFcPGjuMPq9bZsQk for Antigravity). aggregateFromPerConvo dedupes
+            // responseId GLOBALLY within one call via its internal seenGlobally set,
+            // so a combined aggregation would count a cross-provider duplicate once —
+            // but aggregateByProvider aggregates each side with its own separate call,
+            // so the same responseId appearing on both sides is counted on BOTH sides.
+            // This is the documented, accepted behaviour (see aggregateByProvider's
+            // doc comment), not a bug: a duplicate responseId across providers would
+            // itself be a data bug (the id spaces are structurally disjoint), and
+            // counting it twice surfaces that bug instead of silently hiding it via a
+            // cross-call global dedupe. This assertion PINS that behaviour so nobody
+            // "fixes" it into a silent cross-provider dedupe later without noticing.
+            const dupPerConvo: any = {
+                'claude:dup-sess': { entries: [entry('shared-rid', '2026-08-02T10:00:00.000Z', 'anthropic', 'claude-opus-4-8')] },
+                '11111111-2222-3333-4444-555555555555': {
+                    entries: [entry('shared-rid', '2026-08-02T10:05:00.000Z', 'API_PROVIDER_GOOGLE_GEMINI', 'MODEL_PLACEHOLDER_M20')] },
+            };
+            const dupSplit = aggregateByProvider(dupPerConvo, new Map(), '');
+            assert.strictEqual(dupSplit.claude.totalCalls, 1,
+                'PINNED (not a bug): a responseId shared across providers is counted on the Claude side too — ' +
+                'aggregateByProvider dedupes per-side, not globally, because provider id spaces are documented ' +
+                'as disjoint; do not "fix" this into a cross-provider global dedupe');
+            assert.strictEqual(dupSplit.antigravity.totalCalls, 1,
+                'PINNED (not a bug): the same shared responseId is ALSO counted on the Antigravity side — a ' +
+                'combined aggregateFromPerConvo call would count it once via seenGlobally, but the partitioned ' +
+                'wrapper counts it twice by design (see aggregateByProvider doc comment)');
+
+            console.log('provider partition: all checks passed');
+        }
     })();
 }
 

@@ -6,6 +6,7 @@
 import {
     TokenEntry, ConvoTokenData, MonthlyAccumulator, MetadataUsage,
     PLACEHOLDER_MAP, OPUS_46_CUTOFF, PROVIDER_DISPLAY, entryFingerprint, modelLabel,
+    isClaudeConvo,
 } from './types';
 import {
     DeepUsageStats, DailyBucket, HourlyBucket, ModelBucket,
@@ -371,5 +372,51 @@ export function aggregateFromPerConvo(
         cacheRate: totalTokens > 0 ? Math.round((totalCa / totalTokens) * 100) : 0,
         dateRange, daily, hourly, models, cascades: cascadeList, providers, weekday, monthly,
         lastActivityAt,
+    };
+}
+
+// ─── Provider Partition ───
+
+export interface ProviderSplit {
+    claude: DeepUsageStats;
+    antigravity: DeepUsageStats;
+}
+
+/**
+ * Partition the ledger by provider and aggregate each side independently.
+ *
+ * Deliberately a wrapper rather than a change to aggregateFromPerConvo. That
+ * function is the only producer of every headline number in the panel, and
+ * threading a provider conditional through its eight bucket builders is how a
+ * silently-wrong total gets shipped. Partitioning the input costs one shallow
+ * object split and reuses every bucket builder unchanged.
+ *
+ * Assumption: responseId spaces are disjoint across providers (Claude uses
+ * `cc-<model>-<date>` and `req_*`; Antigravity uses opaque base64 ids like
+ * `-0BearmYFcPGjuMPq9bZsQk`). This matters because aggregateFromPerConvo
+ * dedupes responseId GLOBALLY within a single call via its internal
+ * seenGlobally set. A combined aggregation (one call over the whole ledger)
+ * would therefore count a responseId shared across providers once, but this
+ * function — which makes one aggregateFromPerConvo call per side — counts it
+ * once on EACH side, i.e. twice overall. That is accepted, not fixed: the id
+ * spaces are structurally disjoint by construction, so a responseId
+ * appearing on both sides would itself be a data bug, and counting it twice
+ * surfaces that bug rather than a silent cross-provider dedupe hiding it.
+ */
+export function aggregateByProvider(
+    perConvo: Record<string, ConvoTokenData>,
+    titleMap: Map<string, string>,
+    dateFilter: DateFilter = '',
+): ProviderSplit {
+    const claudeConvos: Record<string, ConvoTokenData> = {};
+    const antigravityConvos: Record<string, ConvoTokenData> = {};
+
+    for (const [cid, data] of Object.entries(perConvo)) {
+        (isClaudeConvo(cid) ? claudeConvos : antigravityConvos)[cid] = data;
+    }
+
+    return {
+        claude: aggregateFromPerConvo(claudeConvos, titleMap, dateFilter),
+        antigravity: aggregateFromPerConvo(antigravityConvos, titleMap, dateFilter),
     };
 }

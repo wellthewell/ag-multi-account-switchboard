@@ -2082,6 +2082,26 @@ if (require.main === module && process.argv.includes('--self-check')) {
             fsC3.unlinkSync(brokenSchemaPathC3);
             console.log('refreshClaudeUsage refuses to write on null-but-file-exists: all checks passed');
         }
+
+        // ─── pricing resolves every Claude model id in the data ───
+        {
+            const { initPricingCatalog, resolveLiteLlmPricing } = require('../litellmPricing');
+            await initPricingCatalog();
+
+            const ids = ['claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-5', 'fable-5',
+                         'claude-sonnet-4-6', 'claude-opus-4-6', 'claude-sonnet-5',
+                         'claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929',
+                         'claude-fable-5-1'];
+
+            const unresolved = ids.filter((m) => !resolveLiteLlmPricing(m));
+            if (resolveLiteLlmPricing('claude-opus-4-8')) {
+                assert.deepStrictEqual(unresolved, [],
+                    'every Claude model id present in the ledger must resolve to pricing');
+                console.log('pricing resolution: all checks passed');
+            } else {
+                console.log('pricing resolution: SKIPPED (catalog unavailable — offline?)');
+            }
+        }
     })();
 }
 

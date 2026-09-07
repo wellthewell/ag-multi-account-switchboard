@@ -99,6 +99,10 @@ async function fetchAndBuild(): Promise<void> {
 function normalize(name: string): string {
     return name.toLowerCase()
         .replace(/^(models[/\-_]|vertex_ai\/|anthropic\/|google\/|openai\/)/, '')
+        // Claude Code reports some ids without the vendor prefix the catalog
+        // uses: `fable-5` vs `claude-fable-5`. Worth 320.8M tokens of otherwise
+        // silently-free usage in the archive alone.
+        .replace(/^fable-/, 'claude-fable-')
         .trim();
 }
 

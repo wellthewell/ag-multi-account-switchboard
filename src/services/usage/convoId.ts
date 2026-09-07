@@ -27,6 +27,38 @@ export function isClaudeConvo(cid: string): boolean {
 }
 
 /**
+ * A display label for a Claude cascade, derived from its ledger key alone.
+ *
+ * Claude conversations have no entry in the Antigravity title map (titles come
+ * from the language server's trajectory summaries, which know nothing about
+ * them), so every one of them rendered as the placeholder "Conversation" —
+ * 18 of the Conversations card's 20 visible rows, which being sorted by token
+ * volume also displaced every named Antigravity conversation into the
+ * collapsed overflow.
+ *
+ * Pure string arithmetic on the key: no filesystem, no transcript content
+ * (spec §16 — content is never read), and no dependency on the title map
+ * being persisted, so it survives a cold cache load exactly the same. The
+ * first 8 characters of the session uuid are what `claude --resume` shows and
+ * what the transcript filename starts with, which makes the row traceable
+ * back to a real session.
+ */
+export function claudeCascadeLabel(cid: string): string {
+    if (cid === LEGACY_CLAUDE_ARCHIVE_ID) return 'Claude Code (imported archive)';
+    const rest = cid.startsWith('claude:') ? cid.slice('claude:'.length) : cid;
+    const [session, ...nested] = rest.split(':');
+    const short = (s: string) => (s.length > 8 ? s.slice(0, 8) : s);
+    if (nested.length > 0) {
+        // Real subagent ids are `agent-<17 hex>`; the literal prefix is shared
+        // by every one of them, so truncating with it left in would render
+        // every subagent row identically.
+        const agent = short(nested.join(':').replace(/^agent-/, ''));
+        return `Claude subagent ${short(session)}/${agent}`;
+    }
+    return `Claude session ${short(session)}`;
+}
+
+/**
  * Canonical dedup fingerprint.
  *
  * Prefer responseId: metadata and steps often describe the same model call with

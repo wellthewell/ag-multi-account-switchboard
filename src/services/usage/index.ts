@@ -42,6 +42,26 @@ import type { UsageHealth } from '../../shared/usage-components';
 
 const log = createLogger('UsageStats');
 
+/**
+ * How many of these ledger ids are Antigravity conversations.
+ *
+ * `UsageHealth.conversations` renders as "Conversations read: N" on the Data
+ * health card, describing how much of the ANTIGRAVITY store this pass
+ * covered — the card that tells the user how far to trust every other number
+ * on the dashboard. Both refresh paths derive it from the merged ledger,
+ * which now also holds ~213 Claude ids, so the card read "351" for a store
+ * holding 138. Claude ingestion reports its own coverage nowhere near this
+ * counter, and inflating an Antigravity figure with it is not a substitute.
+ *
+ * A module function rather than an inline filter at each of the two sites: it
+ * is the shared definition of that number, and it is directly assertable
+ * (the server-mode site lives inside incrementalRefresh, which cannot be
+ * driven without a reachable language server).
+ */
+export function antigravityCount(ids: string[]): number {
+    return ids.filter((id) => !isClaudeConvo(id)).length;
+}
+
 export class UsageStatsService {
 
     /** Memory cache for deep stats (expensive to compute) */
@@ -429,7 +449,7 @@ export class UsageStatsService {
         // .health at all.
         this.lastHealth = {
             source: 'store',
-            conversations: Object.keys(merged).length,
+            conversations: antigravityCount(Object.keys(merged)),
             unreadable: failed,
             unknownModels: stats.models.filter(m => isUnknownEnumName(m.displayName)).map(m => m.displayName),
             skippedRows,
@@ -796,7 +816,7 @@ export class UsageStatsService {
             // implying it still applies to server-sourced data.
             this.lastHealth = {
                 source: 'server',
-                conversations: mergedIds.length,
+                conversations: antigravityCount(mergedIds),
                 unreadable: 0,
                 unknownModels: stats.models.filter(m => isUnknownEnumName(m.displayName)).map(m => m.displayName),
                 skippedRows: 0,

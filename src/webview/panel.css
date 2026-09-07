@@ -3761,6 +3761,14 @@ body {
     color: var(--vscode-editor-foreground);
 }
 
+/* The window the section's totals cover. Sits beside the provider name
+   because this region is all-time while the range bar below filters
+   everything else — the two scopes must be visibly different. */
+.up-provider-scope {
+    font-size: 11px;
+    color: var(--muted);
+}
+
 /* Pushed right, and the one large number in the block. */
 .up-provider-tokens {
     margin-left: auto;

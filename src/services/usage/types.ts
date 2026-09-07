@@ -2833,6 +2833,175 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             console.log('cost cell honesty: all checks passed');
         }
+
+        // ─── I3 + I5 + I7: the panel-level findings ───
+        {
+            const { renderProviderSection: renderSectionP, renderProviderRegion: renderRegionP } =
+                require('../../shared/usage-components');
+            const { aggregateFromPerConvo: aggP, allTimeProviderSplit } = require('./aggregator');
+            const { claudeCascadeLabel } = require('./convoId');
+
+            const entP = (rid: string, ts: string, out: number) => ({
+                responseId: rid, source: 'metadata', inp: 10, out, cache: 0,
+                cacheWrite: 0, reasoning: 0, model: 'claude-opus-4-8', provider: 'anthropic', ts,
+            });
+            const ledgerP: any = {
+                'claude:aaaaaaaa-1111-2222-3333-444444444444': { entries: [entP('p1', '2026-08-01T10:00:00.000Z', 5000)] },
+                'claude:bbbbbbbb-1111-2222-3333-444444444444:agent-a32b63bdc31fc263a': { entries: [entP('p2', '2026-08-01T11:00:00.000Z', 4000)] },
+                [LEGACY_CLAUDE_ARCHIVE_ID]: { entries: [entP('p3', '2026-02-01T11:00:00.000Z', 3000)] },
+                '00b78c15-c64b-490f-8dec-7187d9e8c06a': { entries: [{
+                    responseId: 'g1', source: 'metadata', inp: 5, out: 5, cache: 0, cacheWrite: 0,
+                    reasoning: 0, model: 'MODEL_PLACEHOLDER_M20', provider: 'API_PROVIDER_GOOGLE_GEMINI',
+                    ts: '2026-08-01T12:00:00.000Z',
+                }] },
+            };
+
+            // ─── I3: the provider region says which window it covers ───
+            //
+            // The region is deliberately all-time while the range bar renders
+            // immediately below it and filters every other card, so selecting
+            // "24h" left a lifetime total on top of a one-day dashboard with
+            // nothing to distinguish the two scopes. The old hero honoured the
+            // range. The fix is the label, not threading the range through.
+            const splitP = allTimeProviderSplit(ledgerP, new Map());
+            const regionP = renderRegionP(aggP(ledgerP, new Map(), ''), splitP.claude, splitP.antigravity, []);
+            const scopeCells = [...regionP.matchAll(/<span class="up-provider-scope">([^<]*)<\/span>/g)].map((m: any) => m[1]);
+            assert.deepStrictEqual(scopeCells, ['all time', 'all time'],
+                'I3: BOTH provider headers name their window ("all time"), so the region cannot be read as the ' +
+                'range the bar below it is set to');
+            assert.ok(!renderSectionP('Claude Code', splitP.claude, []).includes('up-provider-scope'),
+                'I3: the label is the caller\'s claim about its own scope, not a decoration renderProviderSection ' +
+                'invents — a caller that ever does filter by range must not be made to lie');
+
+            // ─── I5: Claude cascades are distinguishable in the list ───
+            //
+            // Claude conversations have no titleMap entry and no Antigravity
+            // brain directory, so all of them rendered as the same
+            // "Conversation" placeholder — measured at 18 of the
+            // Conversations card's 20 visible rows, which being sorted by
+            // token volume displaced every named Antigravity conversation into
+            // the collapsed overflow. Excluding Claude ids from the card was
+            // rejected: that hides real usage.
+            const titlesP = new Map<string, string>(
+                aggP(ledgerP, new Map(), '').cascades.map((c: any) => [c.id, c.title]),
+            );
+            assert.strictEqual(titlesP.get('claude:aaaaaaaa-1111-2222-3333-444444444444'), 'Claude session aaaaaaaa',
+                'I5: a Claude session row is labelled from its ledger key — no filesystem, no transcript content ' +
+                '(spec §16), and no dependence on a persisted title map');
+            assert.strictEqual(
+                titlesP.get('claude:bbbbbbbb-1111-2222-3333-444444444444:agent-a32b63bdc31fc263a'),
+                'Claude subagent bbbbbbbb/a32b63bd',
+                'I5: a subagent row names both its parent session and its own agent id, with the shared "agent-" ' +
+                'prefix stripped before truncation — otherwise every subagent row would read identically');
+            assert.strictEqual(titlesP.get(LEGACY_CLAUDE_ARCHIVE_ID), 'Claude Code (imported archive)',
+                'I5: the archive says what it is');
+            const claudeTitlesP = [...titlesP.entries()].filter(([id]: any) => isClaudeConvo(id));
+            assert.strictEqual(claudeTitlesP.length, 3, 'sanity: all three Claude rows are in the card');
+            assert.ok(new Set(claudeTitlesP.map(([, t]: any) => t)).size === 3,
+                'I5: the three Claude rows are DISTINGUISHABLE from each other, not three copies of one placeholder');
+            claudeTitlesP.forEach(([, t]: any) => {
+                assert.ok(/^Claude/.test(t), `I5: the provider is marked on the row (${t})`);
+                assert.notStrictEqual(t, 'Conversation', 'I5: no Claude row falls back to the bare placeholder');
+            });
+            // The Antigravity resolvers are untouched: an untitled Antigravity
+            // conversation still lands on its own placeholder, so this fix is
+            // not quietly relabelling the other provider.
+            assert.strictEqual(titlesP.get('00b78c15-c64b-490f-8dec-7187d9e8c06a'), 'Conversation',
+                'I5: the Antigravity title path is unchanged — the Claude branch is additive, not a replacement');
+            assert.strictEqual(claudeCascadeLabel('claude:short'), 'Claude session short',
+                'I5: a session id shorter than the truncation length is left intact');
+
+            // ─── I7: the all-time split is memoized on ledger identity ───
+            //
+            // Measured at 83 ms on the combined ledger, recomputed on every
+            // range and year-selector click even though the split is all-time
+            // and cannot change. ~800 ms per click at 10x the corpus.
+            assert.strictEqual(allTimeProviderSplit(ledgerP, new Map()) === splitP, false,
+                'I7: a DIFFERENT titleMap identity misses the memo — a title refresh over an unchanged ledger must ' +
+                'not be served a stale split');
+            const titleMapP = new Map<string, string>();
+            const firstP = allTimeProviderSplit(ledgerP, titleMapP);
+            assert.strictEqual(allTimeProviderSplit(ledgerP, titleMapP), firstP,
+                'I7: the same ledger and titleMap return the IDENTICAL object — the panel\'s re-renders (range and ' +
+                'year clicks) no longer re-aggregate the whole ledger');
+            assert.notStrictEqual(allTimeProviderSplit({ ...ledgerP }, titleMapP), firstP,
+                'I7: a new ledger object misses the memo, so fresh data is never served stale — every refresh path ' +
+                'builds a new merged object before writing it');
+            assert.strictEqual(firstP.claude.totalCalls, 3, 'I7: the memoized value is the real split, not a stub');
+
+            console.log('provider region scope, claude cascade labels, split memo: all checks passed');
+        }
+
+        // ─── I4: "Conversations read" counts the Antigravity store only ───
+        {
+            const { UsageStatsService: UsageStatsServiceI4, antigravityCount } = require('./index');
+            const { StatsCache: StatsCacheI4 } = require('./cache');
+            const osI4 = require('os'); const fsI4 = require('fs'); const pathI4 = require('path');
+
+            // The shared definition both refresh paths use. Asserted directly
+            // because the server-mode site lives inside incrementalRefresh,
+            // which cannot be driven without a reachable language server.
+            assert.strictEqual(
+                antigravityCount(['a-convo', 'claude:sess-1', LEGACY_CLAUDE_ARCHIVE_ID, 'b-convo']), 2,
+                'I4: only Antigravity ids count — both Claude id shapes (the claude: prefix and the legacy archive ' +
+                'key) are excluded');
+
+            const conversationsI4 = listConversations();
+            if (conversationsI4.length === 0) {
+                console.log('health conversation count: SKIPPED — no Antigravity conversations on this machine');
+            } else {
+                const tmpI4 = pathI4.join(osI4.tmpdir(), `ag-switchboard-selfcheck-i4-${Date.now()}.json`);
+                class TestCacheI4 extends StatsCacheI4 { get filePath() { return tmpI4; } }
+                const cacheI4 = new TestCacheI4();
+
+                // Every real conversation seeded as already-read, plus Claude
+                // ids in the same ledger — the shape the shared-ledger design
+                // now produces on every machine.
+                const perConvoI4: Record<string, unknown> = {};
+                const mtimesI4: Record<string, number> = {};
+                for (const c of conversationsI4) {
+                    perConvoI4[c.id] = { entries: [mk(`seed-${c.id}`, '2020-01-01T00:00:00.000Z')] };
+                    mtimesI4[c.id] = c.mtimeMs + 1;
+                }
+                const claudeIdsI4 = ['claude:i4-aaaa', 'claude:i4-bbbb', LEGACY_CLAUDE_ARCHIVE_ID];
+                for (const id of claudeIdsI4) {
+                    perConvoI4[id] = { entries: [mk(`seed-${id}`, '2020-01-02T00:00:00.000Z')] };
+                }
+                cacheI4.write(perConvoI4, Object.keys(perConvoI4),
+                    aggregateFromPerConvo(perConvoI4 as any, new Map()), new Map(),
+                    undefined, undefined, mtimesI4, '2026-08-01T00:00:00.000Z');
+
+                // One real conversation forced dirty so this is the FULL
+                // refreshFromStore body (the site of the count), not the
+                // dirty:0 early return, which counts listConversations()
+                // directly and was never wrong.
+                const diskI4 = cacheI4.read();
+                diskI4.mtimes[conversationsI4[0].id] = conversationsI4[0].mtimeMs - 1;
+
+                const svcI4 = new UsageStatsServiceI4();
+                svcI4.cache = cacheI4;
+                const original = console.warn;
+                console.warn = () => { /* expected: ECONNREFUSED from the deliberately closed port */ };
+                try {
+                    await svcI4.refreshFromStore({ port: 59998, csrfToken: 'fake', protocol: 'http' }, diskI4);
+                } finally { console.warn = original; }
+
+                const persistedI4 = cacheI4.read();
+                assert.strictEqual(
+                    Object.keys(persistedI4.perConvo).filter(isClaudeConvo).length, claudeIdsI4.length,
+                    'sanity: the Claude ids really are in the merged ledger this pass counted from — otherwise the ' +
+                    'assertion below would pass for the wrong reason');
+                assert.ok(svcI4.lastHealth, 'sanity: a full pass populates health');
+                assert.strictEqual(svcI4.lastHealth.conversations, conversationsI4.length,
+                    'I4: "Conversations read" reports the ANTIGRAVITY conversation count, not the ledger size. This ' +
+                    'is the card that tells the user how far to trust every other number on the dashboard; with ' +
+                    `${claudeIdsI4.length} Claude ids folded into the same ledger it over-reported by that much ` +
+                    '(measured 351 against a store holding 138)');
+
+                fsI4.unlinkSync(tmpI4);
+                console.log(`health conversation count: all checks passed (${conversationsI4.length} antigravity, ${claudeIdsI4.length} claude ids ignored)`);
+            }
+        }
     })();
 }
 

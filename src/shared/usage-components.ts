@@ -1178,6 +1178,15 @@ export function renderProviderSection(
     title: string,
     stats: DeepUsageStats,
     facet: AccountFacetRow[],
+    /**
+     * The window these totals cover, named in the header. The panel passes
+     * 'all time' because this region deliberately ignores the range bar that
+     * renders immediately below it — see renderProviderRegion. An unlabelled
+     * lifetime total sitting on top of a dashboard filtered to 24h reads as
+     * that day's number; the old hero honoured the range, so the difference
+     * has to be visible rather than merely documented in the source.
+     */
+    scopeLabel?: string,
 ): string {
     if (stats.totalCalls === 0 && stats.totalTokens === 0) return '';
 
@@ -1200,6 +1209,7 @@ export function renderProviderSection(
     let html = `<div class="up-provider">`;
     html += `<div class="up-provider-head">`;
     html += `<span class="up-provider-name">${escHtml(title)}</span>`;
+    if (scopeLabel) html += `<span class="up-provider-scope">${escHtml(scopeLabel)}</span>`;
     html += `<span class="up-provider-tokens">${fmtBig(stats.totalTokens)}</span>`;
     html += headline;
     html += `</div>`;
@@ -1250,14 +1260,23 @@ const LEDGER_UNAVAILABLE_NOTE =
  * describes neither tool. So the fallback says the breakdown is missing rather
  * than substituting a total that would mislead.
  */
+/**
+ * Named once, here, and passed to both sections: this region is always
+ * all-time by construction (the panel aggregates it with an empty date
+ * filter), while the range bar directly beneath it filters every other card
+ * on the dashboard. Selecting "24h" must not leave an unlabelled lifetime
+ * total at the top of a one-day dashboard.
+ */
+const PROVIDER_SCOPE_LABEL = 'all time';
+
 export function renderProviderRegion(
     stats: DeepUsageStats,
     claude: DeepUsageStats,
     antigravity: DeepUsageStats,
     claudeFacet: AccountFacetRow[],
 ): string {
-    const sections = renderProviderSection('Claude Code', claude, claudeFacet)
-        + renderProviderSection('Antigravity', antigravity, []);
+    const sections = renderProviderSection('Claude Code', claude, claudeFacet, PROVIDER_SCOPE_LABEL)
+        + renderProviderSection('Antigravity', antigravity, [], PROVIDER_SCOPE_LABEL);
     if (sections) return sections;
 
     // Genuinely nothing to show — an empty ledger AND empty stats. Rendering

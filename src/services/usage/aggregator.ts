@@ -8,6 +8,7 @@ import {
     PLACEHOLDER_MAP, OPUS_46_CUTOFF, PROVIDER_DISPLAY, entryFingerprint, modelLabel,
     isClaudeConvo,
 } from './types';
+import { claudeCascadeLabel } from './convoId';
 import {
     DeepUsageStats, DailyBucket, HourlyBucket, ModelBucket,
     CascadeBucket, MonthlyBucket, MonthlyModelEntry,
@@ -335,11 +336,25 @@ export function aggregateFromPerConvo(
 
         if (cCalls > 0) {
             let title = titleMap.get(cid) || '';
-            
+
             if (isGenericTitle(title)) {
-                title = getTitleFromBrain(cid, 50) || '';
-                if (!title) title = getTitleFromTranscript(cid, 50) || '';
-                if (!title) title = 'Conversation';
+                // A Claude cascade has no title map entry (titles come from
+                // the language server's trajectory summaries, which know
+                // nothing about Claude) and no Antigravity brain directory
+                // either, so both resolvers below would probe the filesystem
+                // for a path that cannot exist and every row would land on the
+                // same "Conversation" placeholder — 18 of the Conversations
+                // card's 20 visible rows, which being sorted by token volume
+                // also pushed every named Antigravity conversation into the
+                // collapsed overflow. Labelled from the ledger key instead,
+                // which also marks the provider on the row.
+                if (isClaudeConvo(cid)) {
+                    title = claudeCascadeLabel(cid);
+                } else {
+                    title = getTitleFromBrain(cid, 50) || '';
+                    if (!title) title = getTitleFromTranscript(cid, 50) || '';
+                    if (!title) title = 'Conversation';
+                }
             }
 
             cascadeList.push({
@@ -428,4 +443,35 @@ export function aggregateByProvider(
         claude: aggregateFromPerConvo(claudeConvos, titleMap, dateFilter),
         antigravity: aggregateFromPerConvo(antigravityConvos, titleMap, dateFilter),
     };
+}
+
+/**
+ * All-time provider split, memoized on ledger identity.
+ *
+ * The panel's provider region is deliberately all-time (it answers "who did
+ * this work, and how does it break down by account"), so its result cannot
+ * change between renders of the same ledger — but it was recomputed on every
+ * render, including every range-bar and year-selector click. Measured at 83 ms
+ * on the combined ledger, i.e. ~800 ms of blocking work per click at 10x the
+ * corpus.
+ *
+ * Keyed on the `perConvo` object's identity, which is exactly right: every
+ * refresh path builds a NEW merged object before writing it (see
+ * mergeIntoLedger and incrementalRefresh), and getCurrentLedger hands that
+ * same object to the panel, so new data always misses the memo and a re-render
+ * of unchanged data always hits it. titleMap identity is checked too, so a
+ * title refresh over an unchanged ledger is not served a stale split. A
+ * WeakMap keeps no ledger alive.
+ */
+const allTimeSplitMemo = new WeakMap<object, { titleMap: Map<string, string>; split: ProviderSplit }>();
+
+export function allTimeProviderSplit(
+    perConvo: Record<string, ConvoTokenData>,
+    titleMap: Map<string, string>,
+): ProviderSplit {
+    const hit = allTimeSplitMemo.get(perConvo);
+    if (hit && hit.titleMap === titleMap) return hit.split;
+    const split = aggregateByProvider(perConvo, titleMap, '');
+    allTimeSplitMemo.set(perConvo, { titleMap, split });
+    return split;
 }

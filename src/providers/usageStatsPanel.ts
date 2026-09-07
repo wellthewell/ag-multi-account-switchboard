@@ -19,7 +19,7 @@ import {
     renderEmptyRange, renderHealthCard,
     accountFacetFor, renderProviderRegion, setClaudeAccountResolver,
 } from '../shared/usage-components';
-import { aggregateByProvider } from '../services/usage/aggregator';
+import { allTimeProviderSplit } from '../services/usage/aggregator';
 import type { UsageLedger } from '../services/usage/types';
 import { discoverClaudeAccounts } from '../services/usage/claude/claudeAccounts';
 
@@ -288,14 +288,22 @@ export class UsageStatsPanel {
         // if this ledger is somehow empty while s has real totals.
         const { perConvo, titleMap } = this.ledger;
 
-        // Deliberately all-time (''), not this.currentRange: the provider
-        // split and account facet answer "who did this work and how does it
-        // break down by account", independent of whichever window the rest
-        // of the dashboard's cards are currently filtered to. Re-deriving
+        // Deliberately all-time, not this.currentRange: the provider split
+        // and account facet answer "who did this work and how does it break
+        // down by account", independent of whichever window the rest of the
+        // dashboard's cards are currently filtered to. Re-deriving
         // getFilteredStats's exact range-filter window here would duplicate
         // that logic outside services/usage/index.ts, which is out of scope
-        // for this change.
-        const split = aggregateByProvider(perConvo, titleMap, '');
+        // for this change. The region SAYS "all time" in its header
+        // (renderProviderSection) so the two scopes are visibly different —
+        // the range bar renders immediately below it and filters every other
+        // card, and an unlabelled lifetime total sitting above a one-day
+        // dashboard is the defect, not the all-time scope itself.
+        //
+        // Memoized on ledger identity: the split is all-time and cannot
+        // change between renders of the same ledger, yet it was recomputed on
+        // every range and year-selector click at a measured 83 ms.
+        const split = allTimeProviderSplit(perConvo, titleMap);
         const claudeFacet = accountFacetFor(perConvo);
 
         return renderProviderRegion(s, split.claude, split.antigravity, claudeFacet);

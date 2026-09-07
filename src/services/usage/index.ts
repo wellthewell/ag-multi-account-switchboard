@@ -21,7 +21,7 @@ import { RpcDirectClient } from '../rpcDirectClient';
 import { callLsJson } from '../../utils/lsClient';
 import { createLogger } from '../../utils/logger';
 import {
-    ConvoTokenData, DiskCacheData, TokenEntry,
+    ConvoTokenData, DiskCacheData, TokenEntry, UsageLedger,
     EP, BATCH_CONCURRENCY, HOT_THRESHOLD_MS, FETCH_TIMEOUT_MS,
     entryFingerprint, mergePreferredEntry, isConvoDirty,
     isClaudeConvo, LEGACY_CLAUDE_ARCHIVE_ID,
@@ -1008,6 +1008,39 @@ export class UsageStatsService {
         existingCounts?: Record<string, { meta: number; steps: number }>,
     ): Record<string, { meta: number; steps: number }> {
         return { ...(existingCounts || {}), ...this.rawFetchCounts };
+    }
+
+    /**
+     * The raw ledger, for a consumer that needs to aggregate it differently
+     * than this service does — currently only the detail panel, whose
+     * per-provider sections and Claude account facet need the ledger itself,
+     * not a finished DeepUsageStats.
+     *
+     * A single method rather than separate perConvo/titleMap getters on
+     * purpose: resolution may hit disk, so two getters would either read the
+     * file twice or risk returning halves resolved from different sources.
+     *
+     * Resolution mirrors getFilteredStats below exactly — memory first, disk
+     * cache second — which is what makes this correct on the paths that broke
+     * the previous design: a memory-cache hit and a refresh skipped because
+     * another window holds the process lock both leave `currentPerConvo`
+     * empty while the disk cache holds the whole ledger. Returns an empty
+     * ledger only when there genuinely is no data anywhere yet; the panel
+     * renders an explicit fallback for that case (renderProviderRegion)
+     * rather than a blank headline.
+     */
+    getCurrentLedger(): UsageLedger {
+        if (Object.keys(this.currentPerConvo).length > 0) {
+            return { perConvo: this.currentPerConvo, titleMap: this.currentTitleMap };
+        }
+        const diskCache = this.cache.read();
+        if (!diskCache) return { perConvo: {}, titleMap: this.currentTitleMap };
+        return {
+            perConvo: diskCache.perConvo,
+            titleMap: diskCache.titleMap
+                ? new Map<string, string>(Object.entries(diskCache.titleMap))
+                : this.currentTitleMap,
+        };
     }
 
     /**

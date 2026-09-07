@@ -9,6 +9,7 @@ import { AccountSwitchService } from '../services/accountSwitch';
 import { TokenBaseService, TokenBaseData, WorkspaceContextData } from '../services/tokenBase';
 import { UsageStatsService } from '../services/usage';
 import { learnModelLabels, setLearnedModelLabels, allLearnedModelLabels } from '../services/usage/types';
+import type { UsageLedger } from '../services/usage/types';
 import { ContextWindowService, ContextWindowData } from '../services/contextWindow';
 import { LiveStream } from '../services/liveStream';
 import { StatusBarService } from '../services/statusBar';
@@ -180,6 +181,18 @@ export class QuotaManager {
 
     getFilteredUsageStats(range: string): DeepUsageStats | null {
         return this.usageStatsService.getFilteredStats(range);
+    }
+
+    /**
+     * The raw ledger behind the current stats — handed to the detail panel
+     * alongside every stats object so its per-provider sections can aggregate
+     * for themselves. Explicit rather than attached to DeepUsageStats: the
+     * stats object reaches the panel from several sources (memory cache, disk
+     * cache, a lock-held refresh that never ran), and only some of them would
+     * have carried a ledger field along with it.
+     */
+    getUsageLedger(): UsageLedger {
+        return this.usageStatsService.getCurrentLedger();
     }
 
     getLastContextWindow(): ContextWindowData | null {
@@ -468,7 +481,7 @@ export class QuotaManager {
 
                 this.usageStatsService.fetchDeepStats(serverInfo, isSubsequentCall, (backfilledStats) => {
                     this.lastUsageStats = backfilledStats;
-                    UsageStatsPanel.currentPanel?.updateLatestStats(backfilledStats);
+                    UsageStatsPanel.currentPanel?.updateLatestStats(backfilledStats, this.getUsageLedger());
 
                     this.pushCachedData();
                 }, (done, total) => {
@@ -477,7 +490,7 @@ export class QuotaManager {
                     if (deep) {
                         log.diag(`refresh: fetchDeepStats done — ${deep.totalCalls} calls`);
                         this.lastUsageStats = deep;
-                        UsageStatsPanel.currentPanel?.updateLatestStats(deep);
+                        UsageStatsPanel.currentPanel?.updateLatestStats(deep, this.getUsageLedger());
                         this.pushCachedData();
                     } else {
 

@@ -3707,88 +3707,7 @@ body {
     margin-top: 4px;
 }
 
-/* ═══════════════════════════════════════════
-   Hero KPI Section
-   ═══════════════════════════════════════════ */
-
-.up-hero-section {
-    text-align: center;
-    margin-bottom: 16px;
-}
-
-.up-hero-pair {
-    display: flex;
-    justify-content: center;
-    gap: 16px;
-    margin-bottom: 10px;
-}
-
-.up-hero-card {
-    background: var(--surface);
-    border: 1px solid var(--divider);
-    border-radius: 12px;
-    padding: 20px 32px 16px;
-    text-align: center;
-    min-width: 180px;
-    transition: all .15s ease;
-}
-
-.up-hero-card:hover {
-    background: var(--hover);
-    border-color: var(--border);
-}
-
-.up-hero-cost {
-    border-color: rgba(245, 158, 11, .25);
-}
-
-.up-hero-cost:hover {
-    border-color: rgba(245, 158, 11, .4);
-    background: rgba(245, 158, 11, .06);
-}
-
-.up-hero-tokens {
-    border-color: rgba(79, 156, 247, .25);
-}
-
-.up-hero-tokens:hover {
-    border-color: rgba(79, 156, 247, .4);
-    background: rgba(79, 156, 247, .06);
-}
-
-.up-hero-val {
-    font-size: 32px;
-    font-weight: 700;
-    letter-spacing: -.8px;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.1;
-}
-
-.up-hero-cost .up-hero-val {
-    color: #f59e0b;
-}
-
-.up-hero-tokens .up-hero-val {
-    color: var(--vscode-editor-foreground);
-}
-
-.up-hero-label {
-    font-size: 10px;
-    color: var(--vscode-descriptionForeground, #888);
-    text-transform: uppercase;
-    letter-spacing: .8px;
-    margin-top: 6px;
-}
-
-/* Hero chips (mirror sidebar chips) */
-.up-hero-chips {
-    display: flex;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 6px 10px;
-    margin-bottom: 6px;
-}
-
+/* Inline chips (still used by the sidebar's own renderers) */
 .up-chip {
     font-size: 11px;
     color: var(--vscode-editor-foreground);
@@ -3814,11 +3733,124 @@ body {
     opacity: .5;
 }
 
-.up-hero-daterange {
+/* ═══════════════════════════════════════════
+   Provider Sections (Claude Code / Antigravity)
+   ═══════════════════════════════════════════ */
+
+/* One block per provider: a header line, then that provider's accounts as an
+   indented list beneath it. The right-hand cells carry fixed min-widths and
+   right alignment so they line up down the block instead of drifting with
+   label length — and, crucially, so the token figure and the count beside it
+   never render as one run-together number (the spans are emitted with no
+   whitespace between them). */
+.up-provider {
+    margin-bottom: 14px;
+}
+
+.up-provider-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--divider);
+}
+
+.up-provider-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--vscode-editor-foreground);
+}
+
+/* Pushed right, and the one large number in the block. */
+.up-provider-tokens {
+    margin-left: auto;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -.4px;
+    font-variant-numeric: tabular-nums;
+    color: var(--vscode-editor-foreground);
+}
+
+/* "N accounts" (Claude) or "N calls" (Antigravity) — secondary to the token
+   figure beside it, and given a fixed left gap so the two never read as one
+   run-together number. */
+.up-provider-calls {
+    min-width: 88px;
+    text-align: right;
     font-size: 11px;
-    color: var(--vscode-descriptionForeground, #888);
-    opacity: .6;
-    margin-top: 4px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Account rows: indented under the header, one line each. */
+.up-acct {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 5px 0 5px 16px;
+    font-size: 12px;
+    border-bottom: 1px solid var(--divider);
+}
+
+.up-acct:last-child {
+    border-bottom: none;
+}
+
+.up-acct-label {
+    color: var(--vscode-editor-foreground);
+    /* min-width:0 is required for the ellipsis: a flex item's default
+       min-width:auto refuses to shrink below its content. */
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.up-acct-tokens {
+    margin-left: auto;
+    font-variant-numeric: tabular-nums;
+    color: var(--vscode-editor-foreground);
+}
+
+.up-acct-calls {
+    min-width: 88px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+}
+
+.up-acct-range {
+    min-width: 150px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── Honesty markers ──
+   These two carry meaning, not decoration: .up-muted marks a figure that is
+   deliberately absent (an em dash where a call count would be dishonest), and
+   .up-warn marks a row whose numbers come with a caveat. Both need to stay
+   readable in light and dark themes, so both use VS Code's own tokens rather
+   than a fixed hex — matching .uh-row / .uh-row.uh-warn above. */
+.up-muted {
+    color: var(--muted);
+    opacity: .85;
+    cursor: help;
+}
+
+.up-warn {
+    color: var(--vscode-editorWarning-foreground, #d29922);
+    font-size: 11px;
+    cursor: help;
+}
+
+/* The ledger-unavailable fallback — a header with no figure at all, never a
+   summed cross-provider total. */
+.up-provider-fallback .up-provider-calls {
+    text-align: left;
+    min-width: 0;
+    margin-left: auto;
 }
 
 /* ═══════════════════════════════════════════

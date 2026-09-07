@@ -372,16 +372,15 @@ export function aggregateFromPerConvo(
         cacheRate: totalTokens > 0 ? Math.round((totalCa / totalTokens) * 100) : 0,
         dateRange, daily, hourly, models, cascades: cascadeList, providers, weekday, monthly,
         lastActivityAt,
-        // Carried forward, not recomputed: the panel's per-provider rendering
-        // (aggregateByProvider / accountFacetFor) needs the raw ledger this
-        // stats object was built from, and this function is the one place all
-        // of index.ts's call sites already funnel through — attaching it here
-        // reaches the panel with no changes needed at any of them. Never
-        // persisted to disk: StatsCache.write strips both before serializing
-        // (see stripLedgerFields in ../../types), since perConvo alone is
-        // already the large majority of the on-disk cache file and
-        // duplicating it there would materially inflate every write.
-        perConvo, titleMap,
+        // Deliberately does NOT carry perConvo/titleMap forward. An earlier
+        // revision attached them here so the panel could find the raw ledger
+        // on the stats object; the panel now receives the ledger as its own
+        // explicit argument (UsageStatsService.getCurrentLedger →
+        // QuotaManager.getUsageLedger → UsageStatsPanel.updateStats), because
+        // smuggling it through this return value blanked the panel's whole
+        // headline on every path where the stats object came back from the
+        // disk cache (which had stripped the fields before persisting them)
+        // rather than straight from here.
     };
 }
 

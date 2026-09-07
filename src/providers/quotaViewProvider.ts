@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ViewState, stripLedgerFields } from '../types';
+import { ViewState } from '../types';
 import { QuotaManager } from '../managers/quotaManager';
 import { getWebviewContent } from '../templates/webviewTemplate';
 import { getPricing } from '../shared/usage-components';
@@ -161,11 +161,7 @@ export class QuotaViewProvider implements vscode.WebviewViewProvider {
             pinnedModels: state.pinnedModels,
             tokenBase: state.tokenBase,
             workspaceContext: state.workspaceContext,
-            // Stripped of .perConvo/.titleMap (see DeepUsageStats in ../types):
-            // those are convenience references for the detail panel only —
-            // sending them here would ship the raw usage ledger through
-            // postMessage to this sidebar webview on every update.
-            usageStats: state.usageStats ? stripLedgerFields(state.usageStats) : state.usageStats,
+            usageStats: state.usageStats,
             contextWindow: null,
             pricing: getPricing(),
         });
@@ -190,9 +186,7 @@ export class QuotaViewProvider implements vscode.WebviewViewProvider {
         if (filtered) {
             this._view?.webview.postMessage({
                 type: 'usageStatsUpdate',
-                // Same stripping as updateData above — this path also feeds
-                // this sidebar webview, not the detail panel.
-                usageStats: stripLedgerFields(filtered),
+                usageStats: filtered,
                 pricing: getPricing(),
             });
         }

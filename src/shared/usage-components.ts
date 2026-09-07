@@ -4,7 +4,7 @@
  * Used by: webview/renderers/usage.ts (sidebar) & providers/usageStatsPanel.ts (detail panel)
  */
 
-import { fmtNum, fmtBig, fmtShortDate, escHtml, isoDay } from './helpers';
+import { fmtNum, fmtBig, fmtShortDate, escHtml, escAttr, isoDay } from './helpers';
 import { DailyBucket, HourlyBucket, ModelBucket, CascadeBucket, MonthlyBucket, MonthlyModelEntry, ProviderBucket, WeekdayBucket } from '../types';
 import type { DeepUsageStats } from '../types';
 import {
@@ -1180,11 +1180,15 @@ export function renderProviderSection(
 
     for (const row of facet) {
         // A rollup row has no honest call count. Render an em dash, never a number.
+        // escAttr, not escHtml: these two go inside title="…", where a `"`
+        // escHtml leaves alone would close the attribute (see escAttr's own
+        // doc comment). row.note is a module constant today; the escaping is
+        // not conditional on that staying true.
         const calls = row.calls === null
-            ? `<span class="up-acct-calls up-muted" title="${escHtml(row.note ?? '')}">—</span>`
+            ? `<span class="up-acct-calls up-muted" title="${escAttr(row.note ?? '')}">—</span>`
             : `<span class="up-acct-calls">${row.calls.toLocaleString()} calls</span>`;
         const warn = row.note
-            ? ` <span class="up-warn" title="${escHtml(row.note)}">⚠</span>`
+            ? ` <span class="up-warn" title="${escAttr(row.note)}">⚠</span>`
             : '';
         html += `<div class="up-acct">`;
         html += `<span class="up-acct-label">${escHtml(row.label)}</span>`;
@@ -1195,4 +1199,48 @@ export function renderProviderSection(
     }
 
     return html + `</div>`;
+}
+
+/** Shown in place of the sections when the split arrived without its ledger. */
+const LEDGER_UNAVAILABLE_NOTE =
+    'The raw usage ledger was not available on this render, so usage could not be '
+    + 'split by provider. The cards below are unaffected.';
+
+/**
+ * The panel's entire provider region — both sections, plus the guarantee that
+ * it is never empty while there is usage to describe.
+ *
+ * That guarantee is the point of this wrapper. `claude`/`antigravity` come from
+ * aggregateByProvider over a ledger the caller supplies, and a caller that
+ * hands over an empty ledger gets two all-zero stats objects, which
+ * renderProviderSection correctly renders as ''. Concatenating those two
+ * directly (as the panel used to) silently erased the panel's whole headline
+ * while `stats` itself still carried billions of tokens — measured at 0 bytes
+ * rendered. This renders a named, honest fallback in that case instead.
+ *
+ * The fallback deliberately carries NO number. `stats` is the combined total
+ * across both providers, and a summed cross-provider headline is exactly what
+ * this region exists to avoid — on the real ledger it is 96.7% Claude and
+ * describes neither tool. So the fallback says the breakdown is missing rather
+ * than substituting a total that would mislead.
+ */
+export function renderProviderRegion(
+    stats: DeepUsageStats,
+    claude: DeepUsageStats,
+    antigravity: DeepUsageStats,
+    claudeFacet: AccountFacetRow[],
+): string {
+    const sections = renderProviderSection('Claude Code', claude, claudeFacet)
+        + renderProviderSection('Antigravity', antigravity, []);
+    if (sections) return sections;
+
+    // Genuinely nothing to show — an empty ledger AND empty stats. Rendering
+    // nothing is correct here; the dashboard's own empty states take over.
+    if (stats.totalCalls === 0 && stats.totalTokens === 0) return '';
+
+    return `<div class="up-provider up-provider-fallback"><div class="up-provider-head">`
+        + `<span class="up-provider-name">Provider breakdown</span>`
+        + `<span class="up-provider-calls up-muted" title="${escAttr(LEDGER_UNAVAILABLE_NOTE)}">`
+        + `unavailable for this refresh</span>`
+        + `</div></div>`;
 }

@@ -120,7 +120,15 @@ export async function activate(context: vscode.ExtensionContext) {
         }),
 
         vscode.commands.registerCommand('ag.openUsageStats', () => {
-            UsageStatsPanel.createOrShow(context.extensionUri, quotaManager.getLastUsageStats());
+            UsageStatsPanel.createOrShow(
+                context.extensionUri,
+                quotaManager.getLastUsageStats(),
+                // Supplied here, not looked up by the panel: the very first
+                // render happens inside createOrShow, before onRangeFilter
+                // below is even assigned, so a callback the panel calls later
+                // would leave that first render with no ledger at all.
+                quotaManager.getUsageLedger(),
+            );
             if (UsageStatsPanel.currentPanel) {
                 UsageStatsPanel.currentPanel.onRangeFilter = (range) =>
                     quotaManager.getFilteredUsageStats(range);

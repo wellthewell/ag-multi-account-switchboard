@@ -104,6 +104,20 @@ export function escHtml(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/**
+ * HTML escape for interpolation inside a quoted attribute value.
+ *
+ * escHtml above escapes only `&`, `<` and `>` — deliberately left as is, since
+ * it has many callers in text position that depend on its exact output. But a
+ * `"` is not markup in text position and *is* in `title="…"`: an unescaped one
+ * closes the attribute early and everything after it is parsed as further
+ * attributes. Anything interpolated into an attribute value must come through
+ * here instead of escHtml, whether or not it is dynamic today.
+ */
+export function escAttr(s: string): string {
+    return escHtml(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 /** CSP nonce generator */
 export function getNonce(): string {
     let text = '';

@@ -17,10 +17,10 @@ import {
     getAvailableYears, renderYearSelector, getMonthlyYears,
     renderWeekdayChart, renderEnrichedCascadeList,
     renderEmptyRange, renderHealthCard,
-    accountFacetFor, renderProviderSection, setClaudeAccountResolver,
+    accountFacetFor, renderProviderRegion, setClaudeAccountResolver,
 } from '../shared/usage-components';
 import { aggregateByProvider } from '../services/usage/aggregator';
-import type { ConvoTokenData } from '../services/usage/types';
+import type { UsageLedger } from '../services/usage/types';
 import { discoverClaudeAccounts } from '../services/usage/claude/claudeAccounts';
 
 const log = createLogger('UsagePanel');
@@ -39,6 +39,15 @@ export class UsageStatsPanel {
     private readonly extensionUri: vscode.Uri;
     private disposables: vscode.Disposable[] = [];
     private lastStats: DeepUsageStats | null = null;
+    /**
+     * The raw ledger the provider sections aggregate for themselves, supplied
+     * explicitly by whoever hands this panel a stats object (see
+     * QuotaManager.getUsageLedger). Never read off the stats object: a
+     * DeepUsageStats that came back from the disk cache has no ledger on it,
+     * and reading one from there rendered the whole provider region as 0
+     * bytes on exactly those paths.
+     */
+    private ledger: UsageLedger = { perConvo: {}, titleMap: new Map() };
     private currentRange: string = 'all';
     private currentGridYear: number = new Date().getFullYear();
     private currentMonthlyYear: number = new Date().getFullYear();
@@ -48,12 +57,16 @@ export class UsageStatsPanel {
 
     // ─── Lifecycle ───
 
-    public static createOrShow(extensionUri: vscode.Uri, stats: DeepUsageStats | null) {
+    public static createOrShow(
+        extensionUri: vscode.Uri,
+        stats: DeepUsageStats | null,
+        ledger: UsageLedger,
+    ) {
         const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
 
         if (UsageStatsPanel.currentPanel) {
             UsageStatsPanel.currentPanel.panel.reveal(column);
-            if (stats) UsageStatsPanel.currentPanel.updateStats(stats);
+            if (stats) UsageStatsPanel.currentPanel.updateStats(stats, ledger);
             return;
         }
 
@@ -62,13 +75,20 @@ export class UsageStatsPanel {
             { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [extensionUri] },
         );
 
-        UsageStatsPanel.currentPanel = new UsageStatsPanel(panel, extensionUri, stats);
+        UsageStatsPanel.currentPanel = new UsageStatsPanel(panel, extensionUri, stats, ledger);
     }
 
-    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, stats: DeepUsageStats | null) {
+    private constructor(
+        panel: vscode.WebviewPanel,
+        extensionUri: vscode.Uri,
+        stats: DeepUsageStats | null,
+        ledger: UsageLedger,
+    ) {
         this.panel = panel;
         this.extensionUri = extensionUri;
         this.lastStats = stats;
+        // Before buildHtml: the constructor's own first render already needs it.
+        this.ledger = ledger;
         this.panel.webview.html = this.buildHtml(stats);
 
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
@@ -90,19 +110,26 @@ export class UsageStatsPanel {
         }, null, this.disposables);
     }
 
-    public updateStats(stats: DeepUsageStats) {
+    /**
+     * `ledger` is optional only for the panel's own internal re-renders (a
+     * year-selector or range click, where the ledger has not changed and the
+     * previous one is still correct). Every caller that supplies a NEW stats
+     * object supplies the ledger it was built from alongside it.
+     */
+    public updateStats(stats: DeepUsageStats, ledger?: UsageLedger) {
         this.lastStats = stats;
+        if (ledger) this.ledger = ledger;
         const html = this.renderDashboard(stats);
         this.panel.webview.postMessage({ type: 'statsUpdate', html, range: this.currentRange });
     }
 
-    public updateLatestStats(stats: DeepUsageStats) {
+    public updateLatestStats(stats: DeepUsageStats, ledger: UsageLedger) {
         if (this.currentRange === 'all') {
-            this.updateStats(stats);
+            this.updateStats(stats, ledger);
             return;
         }
         const filtered = this.onRangeFilter?.(this.currentRange);
-        this.updateStats(filtered || stats);
+        this.updateStats(filtered || stats, ledger);
     }
 
     public dispose() {
@@ -254,13 +281,12 @@ export class UsageStatsPanel {
      * renderProviderSection's own doc comment.
      */
     private renderProviderSections(s: DeepUsageStats): string {
-        // The raw ledger and title map this stats object was aggregated from
-        // — see DeepUsageStats.perConvo/.titleMap. Always present once s
-        // comes from aggregateFromPerConvo (every real code path); the
-        // fallbacks only guard a stats object that somehow arrived some
-        // other way.
-        const perConvo = (s.perConvo ?? {}) as Record<string, ConvoTokenData>;
-        const titleMap = s.titleMap ?? new Map<string, string>();
+        // The ledger arrives with the stats object (see this.ledger) rather
+        // than hanging off it, because the stats object itself reaches this
+        // panel from several sources and only some of them would have carried
+        // one. renderProviderRegion below guarantees a non-blank region even
+        // if this ledger is somehow empty while s has real totals.
+        const { perConvo, titleMap } = this.ledger;
 
         // Deliberately all-time (''), not this.currentRange: the provider
         // split and account facet answer "who did this work and how does it
@@ -272,8 +298,7 @@ export class UsageStatsPanel {
         const split = aggregateByProvider(perConvo, titleMap, '');
         const claudeFacet = accountFacetFor(perConvo);
 
-        return renderProviderSection('Claude Code', split.claude, claudeFacet)
-            + renderProviderSection('Antigravity', split.antigravity, []);
+        return renderProviderRegion(s, split.claude, split.antigravity, claudeFacet);
     }
 
     private renderRangeBar(): string {

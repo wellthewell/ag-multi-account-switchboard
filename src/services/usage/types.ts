@@ -72,6 +72,19 @@ export interface ConvoTokenData {
     entries: TokenEntry[];
 }
 
+/**
+ * The raw ledger plus its title map — the two inputs every aggregation takes.
+ *
+ * Exists so a consumer that needs to aggregate for itself (the detail panel's
+ * per-provider sections) can be handed the ledger explicitly, as one value
+ * resolved from one source, instead of finding it hanging off a DeepUsageStats.
+ * See UsageStatsService.getCurrentLedger.
+ */
+export interface UsageLedger {
+    perConvo: Record<string, ConvoTokenData>;
+    titleMap: Map<string, string>;
+}
+
 // Imported (not defined here) and re-exported: this file ends in a
 // --self-check block that require()s extension-host-only modules (fs,
 // sqlite, the language server client, ...), which makes it unsafe for a
@@ -2210,6 +2223,40 @@ if (require.main === module && process.argv.includes('--self-check')) {
             assert.ok(/thinking/i.test(well.note || ''),
                 'the archive must be marked as not breaking out thinking');
 
+            // ─── the pins-email guard, both directions ───
+            //
+            // accountFacetFor calls resolveBacklogAccount even for a row that
+            // already carries an accountKey, and uses the pinned EMAIL only
+            // when pinned.accountUuid === that key. No resolver is registered
+            // in this process (setClaudeAccountResolver is called from
+            // usageStatsPanel.ts, which needs vscode), so the pinned email is
+            // the ONLY source of a human-readable label here — which is what
+            // makes both directions observable.
+            //
+            // Agreement: 'claude:sess-1' above is stamped with Varakorn's own
+            // uuid on a date the pins also resolve to Varakorn, so the label
+            // is the email.
+            assert.strictEqual(vara.label, 'varakorn.j@topgunthailand.com',
+                'a stamped row whose accountKey MATCHES the date-derived pin takes the pinned email');
+
+            // Disagreement: same era (2026-08 → pins resolve to Varakorn),
+            // but stamped with a different account. The pinned email must not
+            // be borrowed — that would print one person\'s address against
+            // another account\'s usage. With nothing else to label it, the row
+            // shows its raw uuid.
+            const STRANGER = 'ffffffff-1111-2222-3333-444444444444';
+            const mismatched = accountFacetFor({
+                'claude:sess-mismatch': { entries: [entry('m1', '2026-08-05T10:00:00.000Z', STRANGER)] },
+            } as any);
+            assert.strictEqual(mismatched.length, 1);
+            assert.strictEqual(mismatched[0].accountUuid, STRANGER,
+                'the stamped accountKey wins for the uuid itself, never the pinned one');
+            assert.strictEqual(mismatched[0].label, STRANGER,
+                'a stamped row whose accountKey DISAGREES with the date-derived pin must fall back to the raw ' +
+                'uuid — never to the pinned email, which belongs to a different account');
+            assert.ok(!mismatched[0].label.includes('@'),
+                'no email at all is attached to an account the pins did not resolve to');
+
             console.log('account facet: all checks passed');
         }
 
@@ -2229,10 +2276,11 @@ if (require.main === module && process.argv.includes('--self-check')) {
         //     of token cells), not just the absence of one string that
         //     happens not to collide with this fixture's numbers.
         {
-            const { accountFacetFor, renderProviderSection, renderCostEstimate } =
+            const { accountFacetFor, renderProviderSection, renderProviderRegion, renderCostEstimate } =
                 require('../../shared/usage-components');
-            const { aggregateByProvider } = require('./aggregator');
+            const { aggregateByProvider, aggregateFromPerConvo } = require('./aggregator');
             const { modelNameFromEnum } = require('./store/enumMap');
+            const { fmtBig } = require('../../shared/helpers');
 
             const claudeEntry = (rid: string, ts: string, accountKey?: string) => ({
                 responseId: rid, source: 'metadata', inp: 1000, out: 200, cache: 0,
@@ -2286,8 +2334,17 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 'the rollup account row renders in the Claude section, not silently dropped');
             assert.ok(!combinedHtml.includes('175'),
                 'the rollup call count (175 raw entries) must never render as a number anywhere');
-            assert.ok(claudeHtml.includes('—'),
-                'the rollup row renders an em dash for its call count instead');
+
+            // Targets the CALLS CELL, not the document.
+            //
+            // An earlier revision of this assertion was `claudeHtml.includes('—')`,
+            // which could not fail: ROLLUP_NOTE itself ('day rollup — thinking not
+            // broken out') contains U+2014 and is emitted into two title="…"
+            // attributes, so the check passed whatever the cell rendered — "175
+            // calls", or nothing at all. This requires the em dash to be the
+            // content of the muted calls span itself.
+            assert.ok(/<span class="up-acct-calls up-muted"[^>]*>—<\/span>/.test(claudeHtml),
+                'the rollup row\'s CALLS CELL is an em dash — not merely an em dash somewhere in a tooltip');
 
             // Exactly two provider token totals — one per section — never a
             // combined third figure summing both providers.
@@ -2295,10 +2352,102 @@ if (require.main === module && process.argv.includes('--self-check')) {
             assert.strictEqual(tokenCellCount, 2,
                 'exactly two provider token totals render — one per provider, never a combined third');
 
+            // ─── the provider HEADER's own count ───
+            //
+            // stats.totalCalls counts raw entries with no rollup awareness, so a
+            // provider whose data includes the archive would print "176 calls" in
+            // its header — the same lie the account row above suppresses, one level
+            // up. renderProviderSection shows an account count instead whenever a
+            // facet exists. Asserted POSITIVELY (the account count is present) and
+            // NEGATIVELY (the header's calls element carries no "N calls" figure at
+            // all): the previous `!includes('175')` check did not constrain the
+            // header, so reverting that behaviour left every assertion green.
+            const providerCallsCells = (html: string) =>
+                [...html.matchAll(/<span class="up-provider-calls">([^<]*)<\/span>/g)].map(m => m[1]);
+
+            const claudeHeaderCells = providerCallsCells(claudeHtml);
+            assert.deepStrictEqual(claudeHeaderCells, ['2 accounts'],
+                'the Claude header reports its ACCOUNT count (2 here: the stamped account and the archive)');
+            assert.ok(!/\d[\d,]*\s*calls/.test(claudeHeaderCells.join(' ')),
+                'the Claude header shows no call-count figure at all — it cannot honestly total one over a rollup');
+
+            // Antigravity has no facet and no rollup risk, so its header keeps the
+            // real count. Asserted so the fix above cannot be over-applied into
+            // suppressing an honest number.
+            assert.deepStrictEqual(providerCallsCells(antigravityHtml), ['2 calls'],
+                'the Antigravity header keeps its real call count — the suppression is rollup-specific');
+
             console.log('provider sections: all checks passed');
 
-            // Cost cell: a resolved model still prices normally; an
-            // unresolved one is suppressed, never shown as $0.00.
+            // ─── the provider region can never render blank ───
+            //
+            // The regression this pins: the ledger used to be smuggled to the panel
+            // on DeepUsageStats.perConvo/.titleMap, which StatsCache.write stripped
+            // before persisting — so every stats object that came back from the disk
+            // cache (a memory-cache hit, or a refresh skipped because another window
+            // held the process lock) reached the panel without it. The split then came
+            // back all-zero, both sections returned '', and the panel's entire
+            // headline rendered as 0 bytes while the same stats object carried 15.6B
+            // tokens. No error, no fallback.
+            {
+                const stats = aggregateFromPerConvo(perConvo, new Map(), '');
+
+                // The shape cache.read() returns: a plain stats object with no
+                // ledger hanging off it. Pins the smuggling out of existence.
+                assert.strictEqual((stats as any).perConvo, undefined,
+                    'aggregateFromPerConvo must not attach the raw ledger to its result — the panel is given ' +
+                    'it explicitly (UsageStatsService.getCurrentLedger), because a stats object that came back ' +
+                    'from the disk cache would not have carried one');
+                assert.strictEqual((stats as any).titleMap, undefined,
+                    'same for titleMap — see above');
+
+                // With the ledger supplied, the region renders both sections.
+                const region = renderProviderRegion(stats, split.claude, split.antigravity, facet);
+                assert.ok(region.length > 0, 'the provider region is non-empty for a cache.read()-shaped stats object');
+                assert.ok(region.includes('Claude Code') && region.includes('Antigravity'),
+                    'both sections render from the explicitly-supplied ledger');
+
+                // With an EMPTY ledger — the defect's exact shape — the region must
+                // still say something. A blank headline is not acceptable output.
+                const emptySplit = aggregateByProvider({} as any, new Map(), '');
+                const fallback = renderProviderRegion(stats, emptySplit.claude, emptySplit.antigravity, []);
+                assert.ok(fallback.length > 0,
+                    'an empty ledger against a stats object with real totals must render a fallback, not 0 bytes');
+                assert.ok(/unavailable/i.test(fallback),
+                    'the fallback names what is missing rather than rendering an empty block');
+                // ...and still no summed cross-provider figure, which is the whole
+                // reason this region exists.
+                assert.ok(!fallback.includes(fmtBig(stats.totalTokens)),
+                    'the fallback substitutes no combined total — a summed headline describes neither tool');
+                assert.ok(!/\d/.test(fallback.replace(/<[^>]*>/g, '')),
+                    'the fallback renders no figure at all in text position');
+
+                // Genuinely no data anywhere: rendering nothing is correct, and the
+                // dashboard\'s own empty states take over.
+                const zeroStats = aggregateFromPerConvo({} as any, new Map(), '');
+                assert.strictEqual(
+                    renderProviderRegion(zeroStats, emptySplit.claude, emptySplit.antigravity, []), '',
+                    'an empty ledger AND empty stats renders nothing — the fallback is not a permanent banner');
+
+                console.log('provider region never blanks: all checks passed');
+            }
+
+            // ─── cost cell: CHARACTERISATION of pre-existing behaviour ───
+            //
+            // These three assertions do NOT test work done by this task.
+            // renderCostEstimate already suppressed unresolved models (its
+            // MODEL_UNKNOWN_* skip) and sub-$0.01 rows before this task began, and
+            // was not modified by it — so these could never have gone RED here.
+            // They are regression guards on the "never $0.00" honesty requirement,
+            // kept because that requirement is load-bearing for this panel, and
+            // recorded as characterisation so nobody reads them as evidence the
+            // suppression was implemented here.
+            //
+            // Accepted divergence from the brief: the brief asked for the unresolved
+            // model to render "tokens and calls with the cost cell blank". The
+            // existing code drops the whole ROW instead. Left as is (out of scope),
+            // and asserted as row-suppression below so the divergence is explicit
+            // rather than unexamined.
             const unknownName = modelNameFromEnum(87231);
             const pricedModel = {
                 displayName: 'Claude Opus 5', rawModel: 'claude-opus-5',

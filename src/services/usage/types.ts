@@ -2234,6 +2234,16 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 'data, or the un-regenerable claude-code-imported archive) was silently clobbered');
 
             fsC3.unlinkSync(brokenSchemaPathC3);
+            // StatsCache preserves a copy of any file it rejects (see
+            // preserveRejected) — including this fixture's. Tidy it up, or
+            // every self-check run leaves one behind in the temp directory.
+            {
+                const dirC3 = pathC3.dirname(brokenSchemaPathC3);
+                const stemC3 = pathC3.basename(brokenSchemaPathC3).replace(/\.json$/, '') + '.rejected-';
+                for (const f of fsC3.readdirSync(dirC3)) {
+                    if (f.startsWith(stemC3)) fsC3.unlinkSync(pathC3.join(dirC3, f));
+                }
+            }
             console.log('refreshClaudeUsage refuses to write on null-but-file-exists: all checks passed');
         }
 

@@ -25,3 +25,29 @@ export const LEGACY_CLAUDE_ARCHIVE_ID = 'claude-code-imported';
 export function isClaudeConvo(cid: string): boolean {
     return cid.startsWith('claude:') || cid === LEGACY_CLAUDE_ARCHIVE_ID;
 }
+
+/**
+ * Canonical dedup fingerprint.
+ *
+ * Prefer responseId: metadata and steps often describe the same model call with
+ * slightly different timestamps, and Claude ingestion deliberately STORES
+ * cross-file duplicates (a resumed session replays a request into a second
+ * transcript) leaving the collapse to whoever aggregates — see Ruling 12.
+ * The token/timestamp fallback is only for API drift.
+ *
+ * Lives here rather than in ./types.ts because both the aggregator
+ * (extension host) and accountFacetFor (webview-bundled) must apply the
+ * IDENTICAL rule: they render in the same block, and the moment the two
+ * disagree the breakdown exceeds the header above it — measured on the live
+ * corpus at +180,670,338 tokens and +388 calls before this was shared. The
+ * parameter is structural, not `TokenEntry`, so this file keeps its
+ * zero-imports invariant (see the doc comment above).
+ */
+export function entryFingerprint(e: {
+    responseId?: string;
+    inp: number; out: number; cache: number; cacheWrite: number; reasoning: number;
+    ts?: string;
+}): string {
+    if (e.responseId) return `rid:${e.responseId}`;
+    return `${e.inp}:${e.out}:${e.cache}:${e.cacheWrite}:${e.reasoning}:${e.ts?.substring(0, 23) || ''}`;
+}

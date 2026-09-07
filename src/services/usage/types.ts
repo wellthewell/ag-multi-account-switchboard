@@ -113,15 +113,12 @@ export interface DiskCacheData {
 }
 
 // ─── Shared Fingerprint ───
-
-/** Canonical dedup fingerprint.
- *  Prefer responseId: metadata and steps often describe the same model call with
- *  slightly different timestamps. The token/timestamp fallback is only for API drift.
- */
-export function entryFingerprint(e: TokenEntry): string {
-    if (e.responseId) return `rid:${e.responseId}`;
-    return `${e.inp}:${e.out}:${e.cache}:${e.cacheWrite}:${e.reasoning}:${e.ts?.substring(0, 23) || ''}`;
-}
+// Canonical definition moved to ./convoId.ts (dependency-free) so the
+// webview-bundled account facet can apply the IDENTICAL dedup rule as the
+// aggregator — see entryFingerprint's own doc comment there. Re-exported so
+// every existing `from './types'` import keeps working unchanged.
+import { entryFingerprint } from './convoId';
+export { entryFingerprint };
 
 export function mergePreferredEntry(existing: TokenEntry, next: TokenEntry): TokenEntry {
     if (existing.source === 'metadata') return existing;
@@ -1356,7 +1353,14 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
         // ─── pinned-era backlog attribution ───
         {
-            const { resolveBacklogAccount } = require('./claude/claudePins');
+            const { resolveBacklogAccount: resolveRaw } = require('./claude/claudePins');
+
+            // The DATE rules only apply on a machine holding one of the two
+            // accounts they describe (I6). Every date-rule assertion below
+            // therefore passes a discovered-accounts list that satisfies that
+            // gate; the negative cases at the end drive it the other way.
+            const THIS_MACHINE = [{ accountUuid: '49a38d72-c70f-4169-bcf3-bf7f31a5b8f7', email: 'varakorn.j@topgunthailand.com' }];
+            const resolveBacklogAccount = (convoId: string, ts: string) => resolveRaw(convoId, ts, THIS_MACHINE);
 
             // Rule 1 — the archive resolves by identity, not by row date. Its rows span
             // Jan-Jul and would otherwise straddle the date rules.
@@ -1398,6 +1402,48 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             assert.strictEqual(resolveBacklogAccount('claude:xyz', ''), null,
                 'a row with no timestamp is unknown');
+
+            // ─── I6: the date rules only describe THIS machine ───
+            //
+            // claudePins ships compiled into a published extension (publisher
+            // `wellthewell`, public repo), and usage-components.ts imports it
+            // statically, so these two real work emails and account uuids
+            // reach every installer in both bundles. The privacy leak is the
+            // lesser half: a config root with no `oauthAccount` is normal per
+            // spec §7.3 and stamps no accountKey, which leaves these pins as
+            // the ONLY resolver — so a stranger's own post-2026-07-26 usage
+            // would render as varakorn.j@topgunthailand.com. The date rules
+            // now require one of the pinned accounts to actually be present.
+            const STRANGER_MACHINE = [{ accountUuid: '00000000-9999-8888-7777-666666666666', email: 'someone@else.example' }];
+
+            assert.strictEqual(resolveRaw('claude:xyz', '2026-08-10T10:00:00.000Z', STRANGER_MACHINE), null,
+                'I6: on a machine whose accounts do not match the pins, a transcript-era row is UNKNOWN — never ' +
+                'labelled with a pinned stranger\'s email');
+            assert.strictEqual(resolveRaw('claude:xyz', '2026-05-01T10:00:00.000Z', STRANGER_MACHINE), null,
+                'I6: the pre-switch date rule is gated too — both date rules, not just the recent one');
+            assert.strictEqual(resolveRaw('claude:xyz', '2026-08-10T10:00:00.000Z'), null,
+                'I6: with no discovered accounts at all (the resolver not yet registered), the date rules stand down');
+
+            // Either pinned account being present is enough — the gate asks
+            // "is this one of the machines these rules describe", not "is this
+            // the account the row resolves to".
+            assert.strictEqual(
+                resolveRaw('claude:xyz', '2026-08-10T10:00:00.000Z',
+                    [{ accountUuid: '348cc96d-a86f-4963-9db5-bf1da5ba879a', email: 'well.j@honestdocs.co' }]).email,
+                'varakorn.j@topgunthailand.com',
+                'I6: the gate is machine-level — the older pinned account being logged in still enables the era rules');
+
+            // The archive rule is exempt: `claude-code-imported` is a
+            // synthetic ledger key for a hand-import that cannot exist on
+            // anyone else's disk, so it needs no machine check.
+            assert.strictEqual(
+                resolveRaw(LEGACY_CLAUDE_ARCHIVE_ID, '2026-06-05T12:00:00.000Z', STRANGER_MACHINE).email,
+                'well.j@honestdocs.co',
+                'I6: the archive rule stays unconditional — that conversation id cannot exist elsewhere');
+            assert.strictEqual(
+                resolveRaw(LEGACY_CLAUDE_ARCHIVE_ID, '2026-06-05T12:00:00.000Z').email,
+                'well.j@honestdocs.co',
+                'I6: ...including with no discovered accounts at all, which is how the webview bundle starts up');
 
             console.log('pinned-era attribution: all checks passed');
         }
@@ -1698,6 +1744,82 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 'transcripts (whose mtimes did not move) are never opened');
 
             console.log('claude ingestion: all checks passed');
+        }
+
+        // ─── I2: accountKey stamping obeys the accountCreatedAt boundary ───
+        //
+        // ingestClaudeUsage resolves ONE active account per pass and then
+        // walks every transcript on disk. Stamping unconditionally meant a
+        // cold ingest labelled the entire historical backlog with whoever is
+        // logged in now — and accountFacetFor prefers a stamped accountKey
+        // over the pinned result with no date check, so the claim is final.
+        // Spec §7.2: "a row dated before an account existed can never be
+        // attributed to it, even if a rule says otherwise."
+        {
+            const { ingestClaudeUsage: ingestI2 } = require('./claude');
+            const fsI2 = require('fs'); const pathI2 = require('path'); const osI2 = require('os');
+
+            const rootI2 = fsI2.mkdtempSync(pathI2.join(osI2.tmpdir(), 'ag-claude-i2-'));
+            const projI2 = pathI2.join(rootI2, 'projects', '-Users-someone-repo');
+            fsI2.mkdirSync(projI2, { recursive: true });
+
+            const usageI2 = { input_tokens: 1, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+            const rowI2 = (rid: string, ts: string) => JSON.stringify({
+                type: 'assistant', requestId: rid, timestamp: ts,
+                message: { model: 'claude-opus-4-8', usage: usageI2, content: [{ type: 'text', text: 'x' }] },
+            });
+
+            // One transcript straddling the account boundary: two rows before
+            // the active account existed, one on the creation day, one after.
+            fsI2.writeFileSync(pathI2.join(projI2, 'cccccccc-1111-2222-3333-444444444444.jsonl'), [
+                rowI2('way-before', '2025-01-05T10:00:00.000Z'),
+                rowI2('day-before', '2026-07-25T23:59:00.000Z'),
+                rowI2('creation-day', '2026-07-26T00:30:00.000Z'),
+                rowI2('after', '2026-08-10T10:00:00.000Z'),
+            ].join('\n'));
+
+            const ACTIVE_UUID_I2 = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+            // Identity file INSIDE the root — the CLAUDE_CONFIG_DIR layout
+            // readAccountForRoot tries first (see its doc comment).
+            const writeIdentityI2 = (createdAt?: string) => fsI2.writeFileSync(
+                pathI2.join(rootI2, '.claude.json'),
+                JSON.stringify({ oauthAccount: {
+                    emailAddress: 'someone@example.com',
+                    accountUuid: ACTIVE_UUID_I2,
+                    ...(createdAt ? { accountCreatedAt: createdAt } : {}),
+                } }),
+            );
+
+            const keysFor = (res: any) => Object.values(res.perConvo)
+                .flatMap((c: any) => c.entries)
+                .reduce((m: Record<string, string | undefined>, e: any) => { m[e.responseId] = e.accountKey; return m; }, {});
+
+            writeIdentityI2('2026-07-26T19:18:37.058600Z');
+            const stampedI2 = keysFor(await ingestI2({ roots: [rootI2] }));
+
+            assert.strictEqual(stampedI2['after'], ACTIVE_UUID_I2,
+                'sanity: a row dated after the active account was created IS stamped with it — the guard must not ' +
+                'disable stamping altogether');
+            assert.strictEqual(stampedI2['creation-day'], ACTIVE_UUID_I2,
+                'I2: the creation day itself belongs to the account, matching claudePins\' own inclusive day boundary');
+            assert.strictEqual(stampedI2['day-before'], undefined,
+                'I2: a row dated the day BEFORE the active account existed must not be stamped with it — spec §7.2. ' +
+                'It falls through to era inference or unknown, both of which render honestly');
+            assert.strictEqual(stampedI2['way-before'], undefined,
+                'I2: nor may a year-old backlog row be stamped — this is the real-world case, a cold ingest after an ' +
+                'account switch labelling the entire history with the new account');
+
+            // No accountCreatedAt: the boundary is unknown, so nothing is
+            // stamped rather than everything (spec §7.3 calls a root with no
+            // usable identity normal, not an error).
+            writeIdentityI2(undefined);
+            const unknownBoundaryI2 = keysFor(await ingestI2({ roots: [rootI2] }));
+            assert.ok(Object.values(unknownBoundaryI2).every((v) => v === undefined),
+                'I2: with no accountCreatedAt to check against, no row is stamped — an unverifiable stamp is a claim ' +
+                'we cannot support, and accountFacetFor would treat it as final');
+
+            fsI2.rmSync(rootI2, { recursive: true, force: true });
+            console.log('claude accountKey boundary guard: all checks passed');
         }
 
         // ─── Task 7 (revised): Claude ingestion hoisted to fetchDeepStats ───
@@ -2345,7 +2467,20 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
         // ─── account facet and honesty markers ───
         {
-            const { accountFacetFor } = require('../../shared/usage-components');
+            const { accountFacetFor, setClaudeAccountResolver } = require('../../shared/usage-components');
+
+            // The date rules are gated on one of the pinned accounts actually
+            // being present on this machine (I6), and accountFacetFor takes
+            // that list from the registered resolver. Registered here with the
+            // OLDER pinned account: it satisfies the gate while supplying no
+            // email for the uuid the fixture rows are stamped with, which is
+            // what keeps the pinned-email path below observable rather than
+            // short-circuited by a discovered email. Restored to empty at the
+            // end of this section — the resolver is module-global state, and
+            // the HTML sections further down assert against its default.
+            setClaudeAccountResolver(() => [
+                { accountUuid: '348cc96d-a86f-4963-9db5-bf1da5ba879a', email: 'well.j@honestdocs.co' },
+            ]);
 
             const entry = (rid: string, ts: string, accountKey?: string) => ({
                 responseId: rid, source: 'metadata', inp: 0, out: 100, cache: 0,
@@ -2409,6 +2544,84 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 'uuid — never to the pinned email, which belongs to a different account');
             assert.ok(!mismatched[0].label.includes('@'),
                 'no email at all is attached to an account the pins did not resolve to');
+
+            // ─── I1: the facet can never exceed the header above it ───
+            //
+            // The missing half of the spec's §13 test 2 (requestId dedupe): it
+            // landed for the reader and the aggregator, never for the facet.
+            // Ingestion deliberately STORES a cross-file replay (a resumed
+            // session re-sends a request, so the same requestId appears in two
+            // transcripts) and lets whoever aggregates collapse it — Ruling
+            // 12. accountFacetFor summed every stored entry instead, so the
+            // per-account breakdown rendered LARGER than the provider total
+            // directly above it: on the live corpus, header 15,695,716,154
+            // tokens / 9,532 calls against facet 15,876,386,492 / 9,920.
+            //
+            // Both sides dedupe in the same object-insertion order and keep
+            // the first copy, so this is an exact equality, not a tolerance.
+            {
+                const { aggregateByProvider: aggByProv } = require('./aggregator');
+                const row = (rid: string, ts: string, out: number, accountKey?: string) => ({
+                    responseId: rid, source: 'metadata', inp: 0, out, cache: 0,
+                    cacheWrite: 0, reasoning: 0, model: 'claude-opus-4-8',
+                    provider: 'anthropic', ts, accountKey,
+                });
+                const KEY = '49a38d72-c70f-4169-bcf3-bf7f31a5b8f7';
+                // 'req-replay' appears in BOTH sessions — exactly what a
+                // resumed Claude session writes into a second transcript.
+                const replayLedger: any = {
+                    'claude:sess-a': { entries: [
+                        row('req-a1', '2026-08-01T10:00:00.000Z', 10, KEY),
+                        row('req-replay', '2026-08-01T10:05:00.000Z', 1000, KEY),
+                    ] },
+                    'claude:sess-b': { entries: [
+                        row('req-replay', '2026-08-02T09:00:00.000Z', 1000, KEY),
+                        row('req-b1', '2026-08-02T09:05:00.000Z', 20, KEY),
+                    ] },
+                };
+
+                const facetRows = accountFacetFor(replayLedger);
+                const provSplit = aggByProv(replayLedger, new Map(), '');
+
+                const facetTokens = facetRows.reduce((s: number, r: any) => s + r.tokens, 0);
+                const facetCalls = facetRows
+                    .filter((r: any) => r.calls !== null)
+                    .reduce((s: number, r: any) => s + r.calls, 0);
+
+                assert.strictEqual(provSplit.claude.totalCalls, 3,
+                    'sanity: the aggregator collapses the cross-file replay — 4 stored entries, 3 real calls');
+
+                assert.strictEqual(facetTokens, provSplit.claude.totalTokens,
+                    'I1: the account facet\'s token sum must EQUAL the provider header it renders under. Counting every ' +
+                    'stored entry makes the breakdown exceed its own total (measured live: +180,670,338 tokens), because ' +
+                    'ingestion stores cross-file replays on purpose and expects the aggregator\'s responseId collapse');
+                assert.strictEqual(facetCalls, provSplit.claude.totalCalls,
+                    'I1: the facet\'s non-null call sum must EQUAL the header\'s call count (measured live: +388 calls)');
+            }
+
+            // ─── I6 at the facet level: a stranger's machine gets `unknown` ───
+            //
+            // The end-to-end shape of the leak: a config root with no
+            // `oauthAccount` (normal per spec §7.3) stamps no accountKey, so
+            // the pins are the only resolver — and before the machine gate,
+            // this row rendered as varakorn.j@topgunthailand.com on a
+            // stranger's dashboard.
+            setClaudeAccountResolver(() => [
+                { accountUuid: '00000000-9999-8888-7777-666666666666', email: 'someone@else.example' },
+            ]);
+            const strangerRows = accountFacetFor({
+                'claude:their-session': { entries: [entry('their-1', '2026-08-20T10:00:00.000Z')] },
+            } as any);
+            assert.strictEqual(strangerRows.length, 1);
+            assert.strictEqual(strangerRows[0].accountUuid, null,
+                'I6: an unstamped row on a machine the pins do not describe resolves to no account at all');
+            assert.strictEqual(strangerRows[0].label, 'unknown account',
+                'I6: it renders as "unknown account" — never as one of the two pinned work emails compiled into ' +
+                'the published extension');
+
+            // Restore the default: module-global state, and the HTML sections
+            // below assert against an unregistered resolver.
+            setClaudeAccountResolver(() => []);
 
             console.log('account facet: all checks passed');
         }

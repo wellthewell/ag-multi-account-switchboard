@@ -94,9 +94,26 @@ export async function ingestClaudeUsage(opts: IngestOptions = {}): Promise<Inges
 
     // The active account stamps rows read now. Everything older is resolved by
     // claudePins at aggregation time.
-    const activeKey = roots
-        .map(readAccountForRoot)
-        .find((a) => a)?.accountUuid;
+    //
+    // `activeSince` is the boundary guard, and it is not optional: one pass
+    // resolves ONE active account and then walks every transcript on disk,
+    // including a first-ever cold ingest that parses the entire historical
+    // backlog. Stamping all of it with whoever is logged in now is exactly
+    // what spec §7.2 forbids — "a row dated before an account existed can
+    // never be attributed to it, even if a rule says otherwise" — and
+    // accountFacetFor prefers a stamped accountKey over the pinned result
+    // with no date check of its own, so a bad stamp is final. Latent on the
+    // machine this shipped from (earliest row 2026-07-30, createdAt
+    // 2026-07-26) and live for anyone who has ever switched accounts.
+    //
+    // Day granularity, matching claudePins' own guard. No accountCreatedAt
+    // means the boundary is unknown, so nothing is stamped: an unstamped row
+    // falls through to era inference or `unknown`, both of which render
+    // honestly, whereas a stamp that cannot be checked is a claim we cannot
+    // support.
+    const activeAccount = roots.map(readAccountForRoot).find((a) => a) ?? null;
+    const activeKey = activeAccount?.accountUuid;
+    const activeSince = activeAccount?.accountCreatedAt?.slice(0, 10);
 
     const perConvo: Record<string, ConvoTokenData> = {};
     const mtimes: Record<string, number> = {};
@@ -115,7 +132,11 @@ export async function ingestClaudeUsage(opts: IngestOptions = {}): Promise<Inges
         const entries: TokenEntry[] = await readClaudeTranscript(file);
         if (entries.length === 0) continue;
 
-        if (activeKey) for (const e of entries) e.accountKey = activeKey;
+        if (activeKey && activeSince) {
+            for (const e of entries) {
+                if (e.ts && e.ts.slice(0, 10) >= activeSince) e.accountKey = activeKey;
+            }
+        }
         perConvo[id] = { entries };
     }
 

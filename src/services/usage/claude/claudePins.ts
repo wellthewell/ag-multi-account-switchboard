@@ -6,8 +6,12 @@
  * stamped exactly, at read time. Everything older is attributed here, from two
  * pinned eras recovered from dated .claude.json backups.
  *
- * This is inference. The accountCreatedAt guard is what keeps it honest: a row
- * dated before an account existed is never attributed to it.
+ * This is inference. Two things keep it honest: the accountCreatedAt guard (a
+ * row dated before an account existed is never attributed to it), and the
+ * machine gate (the date rules only apply where one of the accounts they
+ * describe is actually present — see resolveBacklogAccount's `discovered`
+ * parameter). Without the second, this file labels a stranger's own usage with
+ * a stranger's email, since it ships compiled into a published extension.
  */
 
 // From ../convoId, not ../types: ../types ends in a --self-check block whose
@@ -52,12 +56,43 @@ const PINNED_ERAS: Rule[] = [
     { from: VARAKORN.createdAt, account: VARAKORN },
 ];
 
-export function resolveBacklogAccount(convoId: string, ts: string): PinnedAccount | null {
+/** Every uuid the date rules describe. A machine holding none of them is not this machine. */
+const PINNED_UUIDS = new Set([WELL.accountUuid, VARAKORN.accountUuid]);
+
+/**
+ * @param discovered  The accounts actually present on THIS machine
+ *                    (discoverClaudeAccounts()'s result, passed in by
+ *                    accountFacetFor — this module cannot import it, see the
+ *                    import comment above). Gates the DATE rules: they are
+ *                    two specific people's account history, and applying them
+ *                    to a stranger's disk labels that stranger's own usage
+ *                    with a name and email that are not theirs.
+ *
+ *                    Not hypothetical, and not merely a privacy leak: a
+ *                    config root with no `oauthAccount` is normal per spec
+ *                    §7.3, ingestion stamps no accountKey in that case, so
+ *                    these pins become the ONLY resolver — and every
+ *                    post-2026-07-26 row of a complete stranger's usage would
+ *                    render as `varakorn.j@topgunthailand.com`. With no
+ *                    match, the date rules yield null and the row renders as
+ *                    `unknown account`, which is honest.
+ *
+ *                    The archive rule stays unconditional: its conversation
+ *                    id is a synthetic ledger key for a hand-import that
+ *                    cannot exist on anyone else's disk.
+ */
+export function resolveBacklogAccount(
+    convoId: string,
+    ts: string,
+    discovered: ReadonlyArray<{ accountUuid: string }> = [],
+): PinnedAccount | null {
+    const describesThisMachine = discovered.some((a) => PINNED_UUIDS.has(a.accountUuid));
     for (const rule of PINNED_ERAS) {
         if ('convoId' in rule) {
             if (convoId === rule.convoId) return guard(rule.account, ts, convoId);
             continue;
         }
+        if (!describesThisMachine) return null;
         if (!ts) return null;
         const day = ts.slice(0, 10);
         if ('before' in rule && day < rule.before) return guard(rule.account, ts, convoId);

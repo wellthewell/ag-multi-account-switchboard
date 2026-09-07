@@ -38,7 +38,7 @@ import {
 // label for a *stamped* row until the resolver is registered, which the
 // self-check does not assert on.
 import type { ConvoTokenData } from '../services/usage/types';
-import { isClaudeConvo, LEGACY_CLAUDE_ARCHIVE_ID } from '../services/usage/convoId';
+import { isClaudeConvo, LEGACY_CLAUDE_ARCHIVE_ID, entryFingerprint } from '../services/usage/convoId';
 import { resolveBacklogAccount } from '../services/usage/claude/claudePins';
 
 export type UsageTotals = {
@@ -1086,20 +1086,46 @@ export function accountFacetFor(
     perConvo: Record<string, ConvoTokenData>,
 ): AccountFacetRow[] {
     // Stamped rows carry a uuid; look up the email so the panel never shows a raw uuid.
+    // The same list also gates claudePins' date rules — those describe two
+    // specific accounts' history, and on a machine holding neither they would
+    // label a stranger's own usage with a stranger's email (see
+    // resolveBacklogAccount's `discovered` parameter). Until the resolver is
+    // registered this is empty, which disables the date rules: the archive
+    // still resolves (by identity, unconditionally) and everything else falls
+    // through to `unknown account`, which renders honestly.
+    const discovered = claudeAccountResolver?.() ?? [];
     const emailByUuid = new Map<string, string>();
-    for (const a of (claudeAccountResolver?.() ?? [])) emailByUuid.set(a.accountUuid, a.email);
+    for (const a of discovered) emailByUuid.set(a.accountUuid, a.email);
 
     const acc = new Map<string, AccountFacetRow>();
     // An account whose usage includes any rollup conversation cannot report a
     // real call count for that portion, so the whole row surrenders the number.
     const rollupAccounts = new Set<string>();
 
+    // The SAME dedup rule aggregateFromPerConvo applies, with the same
+    // cross-conversation scope (its `seenGlobally` set), using the same
+    // function — see entryFingerprint in ../services/usage/convoId.
+    //
+    // Load-bearing, not defensive. Claude ingestion deliberately STORES
+    // cross-file duplicates — a resumed session replays a request into a
+    // second transcript — and leaves the collapse to the aggregator
+    // (Ruling 12). Summing every stored entry here instead made this
+    // breakdown exceed the provider header directly above it: measured on the
+    // live corpus, header 15,695,716,154 tokens / 9,532 calls against facet
+    // 15,876,386,492 / 9,920 — a breakdown 180,670,338 tokens and 388 calls
+    // larger than its own total, rendered in the same block.
+    const seenGlobally = new Set<string>();
+
     for (const [cid, data] of Object.entries(perConvo)) {
         if (!isClaudeConvo(cid)) continue;
         const isRollup = cid === LEGACY_CLAUDE_ARCHIVE_ID;
 
         for (const e of data.entries) {
-            const pinned = resolveBacklogAccount(cid, e.ts);
+            const fp = entryFingerprint(e);
+            if (seenGlobally.has(fp)) continue;
+            seenGlobally.add(fp);
+
+            const pinned = resolveBacklogAccount(cid, e.ts, discovered);
             // Load-bearing: resolveBacklogAccount is called even for a row that
             // already carries an accountKey — but its `email` is used below ONLY
             // when pinned.accountUuid === uuid. A pinned email is date-derived, so

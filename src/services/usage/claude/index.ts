@@ -24,9 +24,52 @@ export interface IngestResult {
     ids: string[];
 }
 
-/** `claude:<sessionId>` — the prefix keeps Claude and Antigravity id spaces disjoint. */
+/**
+ * `claude:<sessionId>` for a top-level transcript, or `claude:<sessionId>:<agentId>`
+ * for a subagent transcript nested at `<slug>/<sessionId>/subagents/<agentId>.jsonl`
+ * (a subagent run writes its own transcript there, alongside — never inside — its
+ * parent's own `<sessionId>.jsonl`).
+ *
+ * Derived from the path segments between the project slug directory and the file
+ * itself, dropping the literal `subagents` segment, rather than from the bare
+ * filename: two different sessions can each spawn an agent that happens to reuse
+ * the same agent id, and a basename-only id would collapse both onto one ledger
+ * key. The id is pure path arithmetic — no file content, no timestamp — so it
+ * stays stable across runs, which matters because it doubles as the mtime cache
+ * key: an id that changed between runs would re-parse that file forever.
+ */
 export function ledgerIdFor(transcriptPath: string): string {
-    return `claude:${path.basename(transcriptPath, '.jsonl')}`;
+    const parts = transcriptPath.split(path.sep);
+    const projectsIdx = parts.lastIndexOf('projects');
+    // parts[projectsIdx] = 'projects', parts[projectsIdx + 1] = the slug (not
+    // part of the id), so there must be at least one more segment (the file)
+    // after that for this to be a well-formed transcript path.
+    if (projectsIdx === -1 || projectsIdx + 2 >= parts.length) {
+        // Layout is not what discoverClaudeTranscripts produces — fall back to
+        // the bare filename rather than throwing.
+        return `claude:${path.basename(transcriptPath, '.jsonl')}`;
+    }
+    const afterSlug = parts.slice(projectsIdx + 2).filter((seg) => seg !== 'subagents');
+    afterSlug[afterSlug.length - 1] = afterSlug[afterSlug.length - 1].replace(/\.jsonl$/, '');
+    return `claude:${afterSlug.join(':')}`;
+}
+
+/** Depth-first collection of every `.jsonl` file under `dir`. A plain synchronous
+ *  walk: `Dirent.isDirectory()` (from `readdirSync`'s own dirents) reflects an
+ *  `lstat`, not a `stat`, so it never reports true for a symlink — this walk
+ *  simply never descends into one, which rules out a symlink cycle for free
+ *  without any cycle-tracking of its own. */
+function collectJsonlFiles(dir: string, out: string[]): void {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            collectJsonlFiles(full, out);
+        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+            out.push(full);
+        }
+    }
 }
 
 export function discoverClaudeTranscripts(roots: string[] = discoverClaudeRoots()): string[] {
@@ -36,12 +79,10 @@ export function discoverClaudeTranscripts(roots: string[] = discoverClaudeRoots(
         let slugs: string[];
         try { slugs = fs.readdirSync(projects); } catch { continue; }
         for (const slug of slugs) {
-            const dir = path.join(projects, slug);
-            let files: string[];
-            try { files = fs.readdirSync(dir); } catch { continue; }
-            for (const f of files) {
-                if (f.endsWith('.jsonl')) out.push(path.join(dir, f));
-            }
+            // Transcripts live at any depth beneath a slug directory, not just
+            // directly inside it: a subagent run writes its own transcript to
+            // <slug>/<sessionId>/subagents/<agentId>.jsonl, three levels down.
+            collectJsonlFiles(path.join(projects, slug), out);
         }
     }
     return out;

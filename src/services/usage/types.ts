@@ -1527,22 +1527,62 @@ if (require.main === module && process.argv.includes('--self-check')) {
             fsI.writeFileSync(sessB, [mkRow('shared-req', '2026-08-01T10:00:00.000Z'),
                                       mkRow('only-b',     '2026-08-02T10:00:00.000Z')].join('\n'));
 
+            // ─── nested subagent transcripts: same-named directory beside the
+            // top-level file (e.g. `<sess>/` next to `<sess>.jsonl` — different
+            // names, legal to coexist), three levels deep under `subagents/`.
+            // Real corpus measurement: 127 of 211 real transcripts (34.5% of
+            // calls, 15.0% of tokens) live exactly here and were silently
+            // dropped by a one-level-deep walk.
+            const agentAaa = pathI.join(proj, 'aaaaaaaa-1111-2222-3333-444444444444', 'subagents', 'agent-aaa.jsonl');
+            // `agent-same.jsonl` deliberately reused under BOTH sessions' subagents/
+            // dirs — the regression this pins is a basename-only id colliding the two.
+            const agentSameA = pathI.join(proj, 'aaaaaaaa-1111-2222-3333-444444444444', 'subagents', 'agent-same.jsonl');
+            const agentSameB = pathI.join(proj, 'bbbbbbbb-1111-2222-3333-444444444444', 'subagents', 'agent-same.jsonl');
+            fsI.mkdirSync(pathI.dirname(agentAaa), { recursive: true });
+            fsI.mkdirSync(pathI.dirname(agentSameB), { recursive: true });
+            fsI.writeFileSync(agentAaa, mkRow('agent-aaa-req', '2026-08-01T12:00:00.000Z'));
+            fsI.writeFileSync(agentSameA, mkRow('agent-same-a-req', '2026-08-01T12:01:00.000Z'));
+            fsI.writeFileSync(agentSameB, mkRow('agent-same-b-req', '2026-08-01T12:01:00.000Z'));
+
             const found = discoverClaudeTranscripts([root]);
-            assert.strictEqual(found.length, 2, 'both transcripts discovered');
+            assert.strictEqual(found.length, 5,
+                'all 5 transcripts discovered — 2 top-level sessions plus 3 nested subagents/*.jsonl files 3 ' +
+                'levels deep; a shortfall here means nested transcripts under subagents/ are being missed');
 
             const first = await ingestClaudeUsage({ roots: [root] });
 
             assert.deepStrictEqual(
                 Object.keys(first.perConvo).sort(),
                 ['claude:aaaaaaaa-1111-2222-3333-444444444444',
-                 'claude:bbbbbbbb-1111-2222-3333-444444444444'],
-                'ledger keys are claude:<sessionId>');
+                 'claude:aaaaaaaa-1111-2222-3333-444444444444:agent-aaa',
+                 'claude:aaaaaaaa-1111-2222-3333-444444444444:agent-same',
+                 'claude:bbbbbbbb-1111-2222-3333-444444444444',
+                 'claude:bbbbbbbb-1111-2222-3333-444444444444:agent-same'],
+                'ledger keys are claude:<sessionId>, or claude:<sessionId>:<agentId> for a nested subagent transcript');
+
+            // ─── pin the exact nested id scheme (requirement 1) ───
+            const nestedEntry = first.perConvo['claude:aaaaaaaa-1111-2222-3333-444444444444:agent-aaa'];
+            assert.ok(nestedEntry, 'a nested subagents/agent-aaa.jsonl transcript produces its own ledger entry');
+            assert.deepStrictEqual(nestedEntry.entries.map((e: any) => e.responseId), ['agent-aaa-req'],
+                'the nested transcript is keyed <parent-session>:<agent-id>, exactly, and holds its own entries');
+
+            // ─── no collision across sessions that each spawn an agent with the same id (requirement 2) ───
+            const sameA = first.perConvo['claude:aaaaaaaa-1111-2222-3333-444444444444:agent-same'];
+            const sameB = first.perConvo['claude:bbbbbbbb-1111-2222-3333-444444444444:agent-same'];
+            assert.ok(sameA && sameB,
+                'two different sessions each having a subagents/agent-same.jsonl produce two distinct ledger ids');
+            assert.strictEqual(sameA.entries[0].responseId, 'agent-same-a-req',
+                'session A\'s agent-same transcript keeps its own entry');
+            assert.strictEqual(sameB.entries[0].responseId, 'agent-same-b-req',
+                'session B\'s agent-same transcript keeps its own entry — under a basename-only id scheme ' +
+                'these two files would collapse onto one ledger id and one would silently clobber the other');
 
             const total = Object.values(first.perConvo)
                 .reduce((n: number, c: any) => n + c.entries.length, 0);
-            assert.strictEqual(total, 4,
-                'each session stores what its own file contains — 2 + 2. `shared-req` ' +
-                'legitimately appears in both, because a resumed session replays it.');
+            assert.strictEqual(total, 7,
+                'each of the 5 discovered files stores what it contains — 2 + 2 top-level, plus 1 entry each ' +
+                'for the 3 nested subagent transcripts. `shared-req` legitimately appears in both top-level ' +
+                'files, because a resumed session replays it.');
 
             // Cross-file dedupe is NOT this layer's job: aggregateFromPerConvo already
             // carries a `seenGlobally` set keyed on responseId for exactly this case
@@ -1550,8 +1590,8 @@ if (require.main === module && process.argv.includes('--self-check')) {
             // would double-suppress and undercount.
             const { aggregateFromPerConvo } = require('./aggregator');
             const agg = aggregateFromPerConvo(first.perConvo, new Map(), '');
-            assert.strictEqual(agg.totalCalls, 3,
-                'the aggregator collapses the replayed responseId across sessions');
+            assert.strictEqual(agg.totalCalls, 6,
+                'the aggregator collapses the one replayed responseId (shared-req) across the 7 stored entries');
 
             for (const c of Object.values(first.perConvo) as any[]) {
                 for (const e of c.entries) {
@@ -1560,7 +1600,8 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 }
             }
 
-            assert.strictEqual(Object.keys(first.mtimes).length, 2, 'mtimes recorded per session');
+            assert.strictEqual(Object.keys(first.mtimes).length, 5,
+                'mtimes recorded per file, one per file — nested subagent transcripts each get their own mtime slot, never merged under a parent id');
 
             // Second pass with the same mtimes must skip everything, and must do so
             // WITHOUT opening either file — not merely "opens it, then discards the
@@ -1609,6 +1650,35 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 'not merely excluded from the result. Without this, an implementation that parses every file and ' +
                 'only conditionally stores the result would pass every assertion above while still reading all ' +
                 '403MB on every refresh.');
+
+            // ─── the mtime gate is 1:1 per file for a NESTED transcript too (requirement 3) ───
+            // Baseline "known" state reflects the touch already applied to sessA above (its
+            // current on-disk mtime), so sessA is not spuriously re-flagged dirty here — only
+            // the newly-touched nested file should come back.
+            const knownAfterThird: Record<string, number> = { ...first.mtimes };
+            knownAfterThird['claude:aaaaaaaa-1111-2222-3333-444444444444'] = fsI.statSync(sessA).mtimeMs;
+            const evenLater = Date.now() / 1000 + 20;
+            fsI.utimesSync(agentAaa, evenLater, evenLater);
+
+            const openedFourth: string[] = [];
+            fsI.createReadStream = function (p: string, ...args: any[]) {
+                openedFourth.push(p);
+                return realCreateReadStream.call(fsI, p, ...args);
+            };
+            let fourth: any;
+            try {
+                fourth = await ingestClaudeUsage({ roots: [root], mtimes: knownAfterThird });
+            } finally {
+                fsI.createReadStream = realCreateReadStream;
+            }
+            assert.deepStrictEqual(Object.keys(fourth.perConvo),
+                ['claude:aaaaaaaa-1111-2222-3333-444444444444:agent-aaa'],
+                'touching only a nested subagent transcript re-reads only its own composite id — not its ' +
+                'parent session (sessA, which shares its "aaaaaaaa..." prefix, must stay untouched) and not ' +
+                'any sibling nested transcript — proving the mtime gate is genuinely 1:1 per file, never merged');
+            assert.deepStrictEqual(openedFourth, [agentAaa],
+                'only the touched nested transcript is opened; sessA, sessB, and the two other nested ' +
+                'transcripts (whose mtimes did not move) are never opened');
 
             console.log('claude ingestion: all checks passed');
         }

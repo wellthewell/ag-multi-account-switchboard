@@ -1499,6 +1499,119 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             console.log('claude transcript reader: all checks passed');
         }
+
+        // ─── Claude ingestion: keys, dedupe across files, mtime delta ───
+        {
+            const { discoverClaudeTranscripts, ingestClaudeUsage } = require('./claude');
+            const fsI = require('fs');
+            const pathI = require('path');
+            const osI = require('os');
+
+            const root = fsI.mkdtempSync(pathI.join(osI.tmpdir(), 'ag-claude-ingest-'));
+            const proj = pathI.join(root, 'projects', '-Users-someone-repo');
+            fsI.mkdirSync(proj, { recursive: true });
+
+            const usage = { input_tokens: 1, output_tokens: 100,
+                            cache_read_input_tokens: 10, cache_creation_input_tokens: 2,
+                            output_tokens_details: { thinking_tokens: 40 } };
+            const mkRow = (rid: string, ts: string) => JSON.stringify({
+                type: 'assistant', requestId: rid, timestamp: ts,
+                message: { model: 'claude-opus-4-8', usage, content: [{ type: 'text', text: 'x' }] },
+            });
+
+            const sessA = pathI.join(proj, 'aaaaaaaa-1111-2222-3333-444444444444.jsonl');
+            const sessB = pathI.join(proj, 'bbbbbbbb-1111-2222-3333-444444444444.jsonl');
+            fsI.writeFileSync(sessA, [mkRow('shared-req', '2026-08-01T10:00:00.000Z'),
+                                      mkRow('only-a',     '2026-08-01T10:01:00.000Z')].join('\n'));
+            // `shared-req` appears in BOTH files — a resumed session replays it.
+            fsI.writeFileSync(sessB, [mkRow('shared-req', '2026-08-01T10:00:00.000Z'),
+                                      mkRow('only-b',     '2026-08-02T10:00:00.000Z')].join('\n'));
+
+            const found = discoverClaudeTranscripts([root]);
+            assert.strictEqual(found.length, 2, 'both transcripts discovered');
+
+            const first = await ingestClaudeUsage({ roots: [root] });
+
+            assert.deepStrictEqual(
+                Object.keys(first.perConvo).sort(),
+                ['claude:aaaaaaaa-1111-2222-3333-444444444444',
+                 'claude:bbbbbbbb-1111-2222-3333-444444444444'],
+                'ledger keys are claude:<sessionId>');
+
+            const total = Object.values(first.perConvo)
+                .reduce((n: number, c: any) => n + c.entries.length, 0);
+            assert.strictEqual(total, 4,
+                'each session stores what its own file contains — 2 + 2. `shared-req` ' +
+                'legitimately appears in both, because a resumed session replays it.');
+
+            // Cross-file dedupe is NOT this layer's job: aggregateFromPerConvo already
+            // carries a `seenGlobally` set keyed on responseId for exactly this case
+            // (sub-agent trajectories recording a parent's call). Duplicating it here
+            // would double-suppress and undercount.
+            const { aggregateFromPerConvo } = require('./aggregator');
+            const agg = aggregateFromPerConvo(first.perConvo, new Map(), '');
+            assert.strictEqual(agg.totalCalls, 3,
+                'the aggregator collapses the replayed responseId across sessions');
+
+            for (const c of Object.values(first.perConvo) as any[]) {
+                for (const e of c.entries) {
+                    assert.strictEqual(e.out + e.reasoning, 100, 'normalization survives ingestion');
+                    assert.ok(e.accountKey === undefined || typeof e.accountKey === 'string');
+                }
+            }
+
+            assert.strictEqual(Object.keys(first.mtimes).length, 2, 'mtimes recorded per session');
+
+            // Second pass with the same mtimes must skip everything, and must do so
+            // WITHOUT opening either file — not merely "opens it, then discards the
+            // result based on mtime." Monkeypatch fs.createReadStream (the one point
+            // readClaudeTranscript actually opens a transcript) to record which paths
+            // are ever opened, so a gate that reads-then-discards is distinguishable
+            // from a gate that skips the parse entirely, per the task's own real
+            // performance requirement (403MB / 191 files — a refresh must parse only
+            // the files whose mtime moved).
+            const realCreateReadStream = fsI.createReadStream;
+            const opened: string[] = [];
+            fsI.createReadStream = function (p: string, ...args: any[]) {
+                opened.push(p);
+                return realCreateReadStream.call(fsI, p, ...args);
+            };
+            let second: any;
+            try {
+                second = await ingestClaudeUsage({ roots: [root], mtimes: first.mtimes });
+            } finally {
+                fsI.createReadStream = realCreateReadStream;
+            }
+            assert.strictEqual(Object.keys(second.perConvo).length, 0,
+                'unchanged transcripts are skipped entirely');
+            assert.deepStrictEqual(opened, [],
+                'neither unchanged file was opened at all — proves the mtime gate skips the parse, not just the store');
+
+            // Touch one file: only that one comes back, and only that one is opened.
+            const later = Date.now() / 1000 + 10;
+            fsI.utimesSync(sessA, later, later);
+            const openedThird: string[] = [];
+            fsI.createReadStream = function (p: string, ...args: any[]) {
+                openedThird.push(p);
+                return realCreateReadStream.call(fsI, p, ...args);
+            };
+            let third: any;
+            try {
+                third = await ingestClaudeUsage({ roots: [root], mtimes: first.mtimes });
+            } finally {
+                fsI.createReadStream = realCreateReadStream;
+            }
+            assert.deepStrictEqual(Object.keys(third.perConvo),
+                ['claude:aaaaaaaa-1111-2222-3333-444444444444'],
+                'only the changed transcript is re-read');
+            assert.deepStrictEqual(openedThird, [sessA],
+                'only the touched file is actually opened — sessB, whose mtime did not move, must never be opened, ' +
+                'not merely excluded from the result. Without this, an implementation that parses every file and ' +
+                'only conditionally stores the result would pass every assertion above while still reading all ' +
+                '403MB on every refresh.');
+
+            console.log('claude ingestion: all checks passed');
+        }
     })();
 }
 

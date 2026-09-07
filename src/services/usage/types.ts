@@ -1951,6 +1951,137 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             console.log('fetchDeepStats -> refreshClaudeUsage wiring: all checks passed (store-mode dirty:0, server-mode, cold-boot)');
         }
+
+        // ─── C1 + C2 + I4: refreshClaudeUsage must not corrupt fields it does
+        // not own. this.currentStepCounts, this.currentPerConvo, and
+        // this.lastHealth are all still empty/null on exactly the paths the
+        // hoist newly reaches (store mode with dirty.length===0; a
+        // server-mode pass whose fetchTrajectorySummaries call failed or
+        // never ran; a zero-Antigravity install) — a write built only from
+        // in-memory state there silently blanks stepCounts, shrinks
+        // fetchedIds, and drops health, none of which existingPerConvo's own
+        // diskCache fallback protects. One seeded cache, one real
+        // refreshClaudeUsage() call, three assertions in a fixed order so a
+        // regression in any one of the three fails at that specific
+        // assertion, not a later unrelated one. ───
+        {
+            const fsCI = require('fs'); const pathCI = require('path'); const osCI = require('os');
+            const { UsageStatsService: UsageStatsServiceCI } = require('./index');
+            const { StatsCache: StatsCacheCI } = require('./cache');
+
+            const tmpCacheCI = pathCI.join(osCI.tmpdir(), 'ag-switchboard-selfcheck-claude-c1c2i4.json');
+            try { fsCI.unlinkSync(tmpCacheCI); } catch { /* absent is fine */ }
+            class TestCacheCI extends StatsCacheCI {
+                get filePath() { return tmpCacheCI; }
+            }
+            const testCacheCI = new TestCacheCI();
+
+            // Seed: a real archived entry, a non-empty stepCounts (C1), an id
+            // present ONLY in fetchedIds and absent from perConvo — the exact
+            // "fetched, produced zero entries" shape twoPhaseFullFetch itself
+            // writes (C2) — and a stats object carrying .health (I4).
+            const seededPerConvoCI = {
+                [LEGACY_CLAUDE_ARCHIVE_ID]: {
+                    entries: [{ ts: '2020-01-01T00:00:00.000Z', model: 'm', provider: 'claude', input: 5, output: 5, cache: 0, cacheWrite: 0, reasoning: 0 }],
+                },
+            };
+            const zeroEntryIdCI = 'zero-entry-convo-c2';
+            const seededFetchedIdsCI = [LEGACY_CLAUDE_ARCHIVE_ID, zeroEntryIdCI];
+            const seededStepCountsCI = new Map([['some-antigravity-convo', 7]]);
+            const seededHealthCI = { source: 'store', conversations: 42, unreadable: 0, unknownModels: [], skippedRows: 0, verification: null, countingChangedAt: null };
+            const seededStatsCI = aggregateFromPerConvo(seededPerConvoCI as any, new Map());
+            seededStatsCI.health = seededHealthCI;
+            testCacheCI.write(seededPerConvoCI, seededFetchedIdsCI, seededStatsCI, new Map(), seededStepCountsCI, undefined, {}, undefined);
+
+            const seededDiskCI = testCacheCI.read();
+            assert.ok(seededDiskCI, 'sanity: the seeded temp cache reads back');
+            assert.deepStrictEqual(seededDiskCI.stepCounts, { 'some-antigravity-convo': 7 }, 'sanity: stepCounts seeded correctly');
+            assert.ok(seededDiskCI.fetchedIds.includes(zeroEntryIdCI),
+                'sanity: the zero-entry id is present in fetchedIds but not in perConvo, mirroring twoPhaseFullFetch\'s own shape');
+            assert.ok(!seededDiskCI.perConvo[zeroEntryIdCI], 'sanity: ...and genuinely absent from perConvo');
+
+            const svcCI = new UsageStatsServiceCI();
+            svcCI.cache = testCacheCI;
+            assert.strictEqual(svcCI.currentStepCounts.size, 0, 'sanity: a fresh service instance has not populated currentStepCounts this cycle');
+            assert.strictEqual(Object.keys(svcCI.currentPerConvo).length, 0, 'sanity: ...nor currentPerConvo');
+            assert.strictEqual(svcCI.lastHealth, null, 'sanity: ...nor lastHealth');
+
+            const resultCI = await svcCI.refreshClaudeUsage();
+            assert.strictEqual(resultCI, true, 'sanity: real Claude corpus produces a genuine write this pass');
+
+            const afterCI = testCacheCI.read();
+
+            // C1 — stepCounts must not be blanked.
+            assert.deepStrictEqual(afterCI.stepCounts, { 'some-antigravity-convo': 7 },
+                'C1: persisted stepCounts must survive a Claude-only write via the diskCache fallback (mirrors titleMap) — an ' +
+                'empty in-memory currentStepCounts must not silently replace it with {}, which would destroy server-mode ' +
+                'delta state and force incrementalRefresh to re-fetch the entire corpus on its next pass');
+
+            // C2 — fetchedIds must not shrink.
+            assert.ok(afterCI.fetchedIds.includes(zeroEntryIdCI),
+                'C2: a fetched-but-zero-entries id must survive in fetchedIds — replacing it with Object.keys(merged) alone ' +
+                'drops ids twoPhaseFullFetch legitimately tracks there but never puts in perConvo, causing permanent ' +
+                're-fetch oscillation on every subsequent incrementalRefresh pass');
+
+            // I4 — health must not be dropped.
+            assert.ok(afterCI.stats.health,
+                'I4: health must not be dropped on the Claude-only path when this.lastHealth is unset this cycle');
+            assert.deepStrictEqual(afterCI.stats.health, seededHealthCI,
+                'I4: the health already on disk must survive a Claude-only write when this.lastHealth is null — otherwise ' +
+                'the health card goes dark on exactly the zero-Antigravity install this hoist exists to serve');
+
+            fsCI.unlinkSync(tmpCacheCI);
+            console.log('refreshClaudeUsage field preservation (C1 stepCounts, C2 fetchedIds, I4 health): all checks passed');
+        }
+
+        // ─── C3: refuse to write when read() returns null but a cache file
+        // exists on disk — the archive-preservation guarantee at its last
+        // unguarded point. A hand-written file with schemaVersion:99 is the
+        // cleanest trigger: read()'s own schema gate rejects it (returns
+        // null) while fs.existsSync sees it plainly. Without the guard,
+        // refreshClaudeUsage would fall back to this.currentPerConvo (still
+        // {} on a fresh instance) and silently overwrite this file with
+        // Claude-only content, discarding whatever the real file held —
+        // including, on a real machine, LEGACY_CLAUDE_ARCHIVE_ID's entries,
+        // which have no source file anywhere and cannot be regenerated. ───
+        {
+            const fsC3 = require('fs'); const pathC3 = require('path'); const osC3 = require('os');
+            const { UsageStatsService: UsageStatsServiceC3 } = require('./index');
+            const { StatsCache: StatsCacheC3 } = require('./cache');
+
+            const brokenSchemaPathC3 = pathC3.join(osC3.tmpdir(), 'ag-switchboard-selfcheck-claude-c3-badschema.json');
+            const brokenSchemaContentC3 = JSON.stringify({
+                schemaVersion: 99,
+                perConvo: { [LEGACY_CLAUDE_ARCHIVE_ID]: { entries: [{ ts: '2020-01-01T00:00:00.000Z', model: 'm', provider: 'claude', input: 111222, output: 333444, cache: 0, cacheWrite: 0, reasoning: 0 }] } },
+                fetchedIds: [LEGACY_CLAUDE_ARCHIVE_ID],
+                stats: { totalCalls: 1 },
+                updatedAt: new Date().toISOString(),
+            });
+            fsC3.writeFileSync(brokenSchemaPathC3, brokenSchemaContentC3, 'utf-8');
+
+            class BrokenSchemaCacheC3 extends StatsCacheC3 {
+                get filePath() { return brokenSchemaPathC3; }
+            }
+            const svcC3 = new UsageStatsServiceC3();
+            svcC3.cache = new BrokenSchemaCacheC3();
+
+            assert.strictEqual(svcC3.cache.read(), null,
+                'sanity: read() rejects the unsupported schemaVersion — exactly the null-but-file-exists trigger');
+            assert.ok(fsC3.existsSync(brokenSchemaPathC3), 'sanity: the file genuinely exists on disk');
+
+            const resultC3 = await svcC3.refreshClaudeUsage();
+            assert.strictEqual(resultC3, false,
+                'C3: refreshClaudeUsage refuses to write and returns false when read() returns null but a cache file ' +
+                'exists on disk — the archive-preservation guarantee at its last unguarded point');
+
+            const afterC3 = fsC3.readFileSync(brokenSchemaPathC3, 'utf-8');
+            assert.strictEqual(afterC3, brokenSchemaContentC3,
+                'C3: the file on disk is byte-identical after the call — no write occurred, so nothing (real Antigravity ' +
+                'data, or the un-regenerable claude-code-imported archive) was silently clobbered');
+
+            fsC3.unlinkSync(brokenSchemaPathC3);
+            console.log('refreshClaudeUsage refuses to write on null-but-file-exists: all checks passed');
+        }
     })();
 }
 

@@ -507,6 +507,37 @@ export class UsageStatsService {
             }
 
             const diskCache = this.cache.read();
+
+            // read() returns null on a missing file, a parse failure, missing
+            // top-level fields, or a schemaVersion mismatch — not only "no
+            // cache yet". If a cache file demonstrably exists on disk right
+            // now but read() still came back null, this.currentPerConvo is
+            // NOT a safe fallback below: it is still {} on exactly the paths
+            // this hoist newly reaches (store mode with dirty.length===0
+            // never sets it; the disk-cache branch of fetchDeepStats never
+            // sets it either — only a full-pass refreshFromStore/
+            // incrementalRefresh/twoPhaseFullFetch does). Writing anyway would
+            // silently replace the entire ledger with Claude data alone —
+            // every Antigravity conversation and, worse, the
+            // LEGACY_CLAUDE_ARCHIVE_ID entries, which have no source file
+            // anywhere and cannot be regenerated. Refuse rather than guess. A
+            // genuinely first-ever cold boot (no file exists at all) does not
+            // hit this guard and stays benign: a partial ledger there just
+            // fills in on the next launch.
+            //
+            // Deliberately re-reads rather than accepting the caller's
+            // already-read diskCache as a parameter: fetchDeepStats reads
+            // diskCache BEFORE running the Antigravity path, so threading
+            // that snapshot in here would merge against pre-refresh state and
+            // this write would stomp the Antigravity data that path just
+            // persisted this same cycle, with the "preserve verbatim" branch
+            // of mergeIntoLedger copying the stale pre-refresh entries right
+            // back over it.
+            if (!diskCache && fs.existsSync(this.cache.filePath)) {
+                log.warn('refreshClaudeUsage: cache file exists but read() returned null — refusing to write, would clobber the ledger');
+                return false;
+            }
+
             const existingPerConvo = diskCache?.perConvo || this.currentPerConvo || {};
 
             // presentIds carries only the Claude ids this pass discovered —
@@ -525,15 +556,43 @@ export class UsageStatsService {
             const titleMap = this.currentTitleMap.size > 0
                 ? this.currentTitleMap
                 : new Map<string, string>(Object.entries(diskCache?.titleMap || {}));
+            // Mirrors the titleMap fallback exactly: currentStepCounts is only
+            // populated by fetchTrajectorySummaries and is NOT restored by the
+            // disk-cache load, so it is still the initial empty Map on store
+            // mode with dirty.length===0 and on any server-mode pass where
+            // fetchTrajectorySummaries itself failed. Without this fallback,
+            // an empty (but truthy) Map would replace the persisted
+            // stepCounts with {}, and incrementalRefresh would then read
+            // cachedStepCount:0 for every id on its next pass — not data
+            // loss, but it destroys the server-mode delta state and forces a
+            // full re-fetch of the entire corpus.
+            const stepCounts = this.currentStepCounts.size > 0
+                ? this.currentStepCounts
+                : new Map<string, number>(Object.entries(diskCache?.stepCounts || {}));
             const stats = aggregateFromPerConvo(merged, titleMap);
-            // Preserve whatever health/countingChangedAt the Antigravity path
-            // already established this cycle (if any ran) — this write only
-            // adds Claude data and must not regress either.
-            if (this.lastHealth) stats.health = this.lastHealth;
+            // Preserve whatever health was already established: either this
+            // cycle's Antigravity pass (this.lastHealth), or — if that path
+            // did not run or did not set it this cycle (a zero-Antigravity
+            // install is exactly the case this hoist exists to serve) —
+            // whatever was already on disk. Without the diskCache fallback, a
+            // Claude-only write silently blanks the health card.
+            stats.health = this.lastHealth ?? diskCache?.stats?.health;
+
+            // fetchedIds is not the same set as perConvo's keys: twoPhaseFullFetch
+            // persists ids that were fetched but produced zero entries in
+            // fetchedIds while leaving them out of perConvo entirely. Union,
+            // never replace — replacing drops them, incrementalRefresh then
+            // treats them as newly-seen on its next pass, re-fetches and
+            // re-unions them, and the next Claude write drops them again.
+            // (refreshFromStore uses the same Object.keys(merged) pattern at
+            // its own write site, but store mode never consumes fetchedIds —
+            // this write now also runs on the server-mode path that does, so
+            // it needs the union unconditionally.)
+            const fetchedIds = [...new Set([...(diskCache?.fetchedIds || []), ...Object.keys(merged)])];
 
             const mtimesForWrite = { ...(diskCache?.mtimes || {}), ...claude.mtimes };
-            this.cache.write(merged, Object.keys(merged), stats, titleMap,
-                this.currentStepCounts, diskCache?.entryCounts, mtimesForWrite, diskCache?.countingChangedAt);
+            this.cache.write(merged, fetchedIds, stats, titleMap,
+                stepCounts, diskCache?.entryCounts, mtimesForWrite, diskCache?.countingChangedAt);
 
             this.deepStatsCache = stats;
             this.currentPerConvo = merged;

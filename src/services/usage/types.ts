@@ -1418,10 +1418,22 @@ if (require.main === module && process.argv.includes('--self-check')) {
                       message: { model: 'claude-sonnet-5',
                                  usage: usage({ output_tokens: 500, output_tokens_details: undefined }),
                                  content: [{ type: 'text', text: 'done' }] } }),
-                // Non-assistant rows and a tool_result user row are not calls.
+                // Rows with no usage block at all are filtered by the cheap "usage"
+                // pre-filter before parsing ever happens — these two prove that
+                // pre-filter, not the type check below (that guard is proven
+                // separately by req-user-usage, which is built to survive this
+                // pre-filter and reach the type check).
                 row({ type: 'user', timestamp: '2026-08-01T10:00:30.000Z',
                       message: { content: [{ type: 'tool_result', content: 'ok' }] } }),
                 row({ type: 'last-prompt', leafUuid: 'x', sessionId: 'session-1' }),
+                // A non-assistant row that DOES carry a usage block and a valid,
+                // non-synthetic model — survives the "usage" pre-filter and the
+                // model check, so only the `type !== 'assistant'` check excludes
+                // it. Distinct requestId: if that check is ever removed, this row
+                // is counted as its own entry (entries.length goes to 4) rather
+                // than silently colliding with an existing key.
+                row({ type: 'user', requestId: 'req-user-usage', timestamp: '2026-08-01T10:00:31.000Z',
+                      message: { model: 'claude-opus-4-8', usage: usage(), content: [] } }),
                 // Synthetic model rows are not billable calls.
                 row({ type: 'assistant', requestId: 'req-3', timestamp: '2026-08-01T10:02:00.000Z',
                       message: { model: '<synthetic>', usage: usage(), content: [] } }),
@@ -1430,15 +1442,29 @@ if (require.main === module && process.argv.includes('--self-check')) {
                       message: { model: 'claude-opus-4-8',
                                  usage: usage({ output_tokens: 10, output_tokens_details: { thinking_tokens: 999 } }),
                                  content: [] } }),
-                // A truncated line mid-write must not abort the file.
-                '{"type":"assistant","requestId":"req-5","mess',
+                // A truncated line mid-write must not abort the file. It carries the
+                // literal `"usage"` substring before the cut, so it survives the
+                // pre-filter and actually reaches JSON.parse (which throws, and must
+                // be caught) — a truncated line without that substring would be
+                // filtered before ever exercising the try/catch, proving nothing
+                // about it.
+                '{"type":"assistant","requestId":"req-5","message":{"usage":{"in',
+                // A valid row occurring AFTER the truncated line, to prove reading
+                // continues past it rather than merely not crashing.
+                row({ type: 'assistant', requestId: 'req-6', timestamp: '2026-08-01T10:04:00.000Z',
+                      message: { model: 'claude-opus-4-8', usage: usage(),
+                                 content: [{ type: 'text', text: 'after truncation' }] } }),
                 '',
             ].join('\n'));
 
             const entries = await readClaudeTranscript(file);
 
-            assert.strictEqual(entries.length, 2,
-                'one entry per requestId: req-1 collapses 3 rows, req-2 is separate, req-3/4/5 excluded');
+            assert.strictEqual(entries.length, 3,
+                'one entry per requestId: req-1 collapses 3 rows into one, req-2 and req-6 are separate ' +
+                'real calls; req-3 (synthetic model), req-4 (thinking > output violation), req-user-usage ' +
+                '(wrong row type, despite carrying a usage block), and the truncated req-5 line are all ' +
+                'excluded for their own stated reason — a wrong count here means one of those four ' +
+                'exclusions stopped working');
 
             const e1 = entries.find((e: any) => e.responseId === 'req-1');
             assert.ok(e1, 'req-1 must be present');
@@ -1459,10 +1485,17 @@ if (require.main === module && process.argv.includes('--self-check')) {
             assert.strictEqual(e2.reasoning, 0, 'absent output_tokens_details means zero reasoning');
             assert.strictEqual(e2.out, 500, 'and out is the full output');
 
+            const e6 = entries.find((e: any) => e.responseId === 'req-6');
+            assert.ok(e6, 'a valid row occurring after a truncated line must still be read — the ' +
+                'truncated line must not abort the rest of the file');
+
             assert.ok(!entries.some((e: any) => e.responseId === 'req-4'),
                 'an entry violating thinking <= output must be skipped');
             assert.ok(!entries.some((e: any) => e.model === '<synthetic>'),
                 'synthetic rows are not billable calls');
+            assert.ok(!entries.some((e: any) => e.responseId === 'req-user-usage'),
+                'a non-assistant row carrying a usage block must be excluded by the type check itself, ' +
+                'not merely by lacking a usage block — this fixture row is built to survive the pre-filter');
 
             console.log('claude transcript reader: all checks passed');
         }

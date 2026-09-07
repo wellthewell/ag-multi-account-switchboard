@@ -2,6 +2,14 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
+## [Unreleased]
+
+### Added
+- **Claude Code usage is tracked alongside Antigravity.** Claude Code's own session transcripts are read from disk (usage figures only — never conversation content) and folded into the same usage ledger, so the panel shows both tools side by side, each with its own totals and, for Claude, a per-account breakdown. There is deliberately no combined headline: on real data one provider dominates the sum and a single number would describe neither tool.
+
+### Upgrading — reload every open window
+- **After updating, reload all open editor windows before continuing work** (Command Palette → *Developer: Reload Window*, in each window). This release stores usage in a newer file format. A window still running the previous version cannot read the new format, and older versions respond to a file they cannot read by rebuilding it from scratch — which would discard the imported historical Claude Code usage, since that data has no source files to re-read. Windows running this version or later refuse to overwrite a usage file they cannot read and keep a timestamped `.deep_stats_cache.rejected-*.json` copy of it beside the original instead, so the situation is recoverable rather than final; the reload simply avoids it.
+
 ## [3.3.4] — 2026-08-21
 
 ### Fixed

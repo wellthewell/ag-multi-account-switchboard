@@ -2086,6 +2086,21 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 'sanity: read() rejects the unsupported schemaVersion — exactly the null-but-file-exists trigger');
             assert.ok(fsC3.existsSync(brokenSchemaPathC3), 'sanity: the file genuinely exists on disk');
 
+            // Non-vacuity (deferred item 22): `false` below must mean "the
+            // guard fired", not "this pass had nothing to ingest" —
+            // refreshClaudeUsage also returns false at its earlier
+            // no-new-mtimes exit, which would make every assertion in this
+            // section hold on unguarded code too. Section A above already
+            // proved, in this same process and against this same machine's
+            // corpus, that a cold ingest yields real Claude ids; svcC3 is a
+            // fresh instance, so its claudeMtimes are empty and its pass is
+            // likewise cold.
+            assert.ok(claudeKeysHoistA.length > 0,
+                'C3 non-vacuity: this machine has Claude transcripts that a cold pass ingests (proved in section A), so ' +
+                'the false below is the archive-destruction guard firing, not an empty ingest short-circuiting first');
+            assert.strictEqual(Object.keys(svcC3.claudeMtimes).length, 0,
+                'C3 non-vacuity: svcC3 is a fresh instance — its pass is cold, exactly like section A\'s');
+
             const resultC3 = await svcC3.refreshClaudeUsage();
             assert.strictEqual(resultC3, false,
                 'C3: refreshClaudeUsage refuses to write and returns false when read() returns null but a cache file ' +
@@ -2098,6 +2113,144 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             fsC3.unlinkSync(brokenSchemaPathC3);
             console.log('refreshClaudeUsage refuses to write on null-but-file-exists: all checks passed');
+        }
+
+        // ─── C4 (final review, C1): the refusal is a property of the CACHE,
+        // and fetchDeepStats as a whole cannot destroy a rejected file ───
+        //
+        // The section above drives refreshClaudeUsage, which is the LAST of
+        // four write callers to run. The two that run before it —
+        // twoPhaseFullFetch (two bare cache.write calls) and refreshFromStore
+        // on the cold-boot path (merging against an empty cachedPerConvo) —
+        // had no guard at all, so by the time the guard above was consulted
+        // the file had already been rebuilt and was valid again: the guard
+        // passed while the archive was already gone. This section asserts the
+        // property that actually protects the file, at both levels:
+        //
+        //   1. StatsCache.write() itself refuses while the file on disk is
+        //      present-but-undecodable. Caller-independent, so it covers
+        //      twoPhaseFullFetch and any writer added later.
+        //   2. fetchDeepStats end-to-end, with the REAL refreshFromStore
+        //      (only cache.write is redirected to a temp path), leaves the
+        //      file byte-identical.
+        //
+        // A schemaVersion:99 file is the trigger, but the same 'unreadable'
+        // state is reached by a truncated file, a missing top-level field, or
+        // — the case this branch itself introduces — a v3 file read by the
+        // pre-upgrade v2 build's successor logic. This is the assertion that
+        // should have existed all along.
+        {
+            const fsC4 = require('fs'); const pathC4 = require('path'); const osC4 = require('os');
+            const { UsageStatsService: UsageStatsServiceC4 } = require('./index');
+            const { StatsCache: StatsCacheC4 } = require('./cache');
+
+            const pathV99 = pathC4.join(osC4.tmpdir(), `ag-switchboard-selfcheck-c4-v99-${Date.now()}.json`);
+            // Distinctive, un-regenerable content: the archive with token
+            // counts nothing else on this machine could reproduce.
+            const contentV99 = JSON.stringify({
+                schemaVersion: 99,
+                perConvo: {
+                    [LEGACY_CLAUDE_ARCHIVE_ID]: { entries: [
+                        { ts: '2026-03-03T00:00:00.000Z', model: 'archived', provider: 'claude', responseId: 'cc-archive-1', source: 'metadata', inp: 12345678, out: 87654321, cache: 0, cacheWrite: 0, reasoning: 0 },
+                    ] },
+                },
+                fetchedIds: [LEGACY_CLAUDE_ARCHIVE_ID],
+                stats: { totalCalls: 1 },
+                updatedAt: '2026-09-06T00:00:00.000Z',
+            });
+
+            const backupsOf = (p: string): string[] => {
+                const dir = pathC4.dirname(p);
+                const stem = pathC4.basename(p).replace(/\.json$/, '') + '.rejected-';
+                return fsC4.readdirSync(dir)
+                    .filter((f: string) => f.startsWith(stem))
+                    .map((f: string) => pathC4.join(dir, f));
+            };
+
+            const withWarnCapturedC4 = async (fn: () => Promise<any> | any): Promise<{ result: any; warns: string }> => {
+                const original = console.warn;
+                let warns = '';
+                console.warn = (...args: any[]) => { warns += args.map(String).join(' ') + '\n'; };
+                try { return { result: await fn(), warns }; }
+                finally { console.warn = original; }
+            };
+
+            // ── 1. cache-level: write() refuses, caller-independent ──
+            {
+                fsC4.writeFileSync(pathV99, contentV99, 'utf-8');
+                class V99Cache extends StatsCacheC4 { get filePath() { return pathV99; } }
+                const cache = new V99Cache();
+
+                assert.strictEqual(cache.probe(), 'unreadable',
+                    'probe() classifies a present-but-undecodable file as unreadable — the state every write must refuse');
+                assert.strictEqual(cache.read(), null, 'sanity: read() rejects it, the state the old single-path guard keyed on');
+                assert.ok(fsC4.existsSync(pathV99), 'sanity: the file is plainly there');
+
+                // The exact shape twoPhaseFullFetch writes: a bare write with
+                // no mergeIntoLedger and no existence check, carrying data
+                // that does not contain the archive.
+                const rebuilt: any = { 'some-antigravity-convo': { entries: [
+                    { ts: '2026-09-01T00:00:00.000Z', model: 'm', provider: 'x', responseId: 'r-rebuild', source: 'metadata', inp: 1, out: 1, cache: 0, cacheWrite: 0, reasoning: 0 },
+                ] } };
+                const { warns } = await withWarnCapturedC4(() =>
+                    cache.write(rebuilt, ['some-antigravity-convo'], aggregateFromPerConvo(rebuilt, new Map()), new Map()));
+
+                assert.strictEqual(fsC4.readFileSync(pathV99, 'utf-8'), contentV99,
+                    'C1/1: StatsCache.write() leaves a rejected file BYTE-IDENTICAL. This is what covers twoPhaseFullFetch\'s ' +
+                    'two bare writes and refreshFromStore\'s cold-boot merge-against-{} — the two callers that ran BEFORE the ' +
+                    'only guard that existed, so that guard was a no-op by the time it was consulted');
+
+                // 3. Surfaced, not silent.
+                assert.ok(/rejected|Refusing to write/i.test(warns),
+                    'C1/3: a rejected cache logs a warning the user can find, rather than silently rebuilding');
+
+                // 2. Preserved before anything could overwrite it.
+                const copies = backupsOf(pathV99);
+                assert.strictEqual(copies.length, 1,
+                    'C1/2: exactly one .rejected-<ISO>.json copy is taken (once per session, not once per refresh pass)');
+                assert.strictEqual(fsC4.readFileSync(copies[0], 'utf-8'), contentV99,
+                    'C1/2: the preserved copy is byte-identical to the rejected file — the spec\'s §15 "take a copy" ' +
+                    'instruction, mechanically enforced instead of addressed to a human');
+
+                for (const c of copies) fsC4.unlinkSync(c);
+                fsC4.unlinkSync(pathV99);
+            }
+
+            // ── 2. fetchDeepStats end-to-end, real refreshFromStore ──
+            //
+            // Deliberately NOT stubbed, unlike section B: refreshFromStore's
+            // cold-boot path (diskCache === null, merging against an empty
+            // cachedPerConvo) is one of the two unguarded writers, so stubbing
+            // it out would remove the very thing under test. Everything it
+            // touches beyond the redirected cache is read-only (the real
+            // conversation store) and its title fetch fails harmlessly against
+            // the fake port.
+            {
+                fsC4.writeFileSync(pathV99, contentV99, 'utf-8');
+                class V99Cache2 extends StatsCacheC4 { get filePath() { return pathV99; } }
+                const svc = new UsageStatsServiceC4();
+                svc.cache = new V99Cache2();
+                svc.processLock = { acquire: () => true, release: () => { /* no-op */ }, heartbeat: () => { /* no-op */ } };
+                svc.useServerSource = () => false;
+
+                const { warns } = await withWarnCapturedC4(() =>
+                    svc.fetchDeepStats({ port: 59996, csrfToken: 'fake', protocol: 'http' } as any, false));
+
+                assert.strictEqual(fsC4.readFileSync(pathV99, 'utf-8'), contentV99,
+                    'C1/4: a whole fetchDeepStats pass over a rejected cache leaves it BYTE-IDENTICAL. Without the ' +
+                    'cache-level refusal the real refreshFromStore rebuilds this machine\'s Antigravity ledger straight ' +
+                    'over it and claude-code-imported — 175 entries, 12,942,976,240 tokens, no source files anywhere — ' +
+                    'is gone, with the next pass migrating the archive-free file to v3');
+                assert.ok(/rejected|Refusing to write/i.test(warns),
+                    'C1/4: the refusal is surfaced on the real refresh path too, not only on a direct write');
+
+                const copies = backupsOf(pathV99);
+                assert.ok(copies.length >= 1, 'C1/4: the rejected file was preserved before the pass could touch it');
+                for (const c of copies) fsC4.unlinkSync(c);
+                fsC4.unlinkSync(pathV99);
+            }
+
+            console.log('C1 cache-level write refusal + rejected-file preservation: all checks passed');
         }
 
         // ─── pricing resolves every Claude model id in the data ───

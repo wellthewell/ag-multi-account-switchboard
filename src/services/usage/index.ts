@@ -533,6 +533,14 @@ export class UsageStatsService {
             // persisted this same cycle, with the "preserve verbatim" branch
             // of mergeIntoLedger copying the stale pre-refresh entries right
             // back over it.
+            //
+            // This is now a cheap EARLY EXIT, not the protection itself.
+            // StatsCache.write() refuses any write while the file on disk is
+            // present-but-undecodable (see StatsCache.probe/write), which
+            // covers all four write callers rather than only this one. Kept
+            // here because it also skips a pointless merge + aggregate pass,
+            // and because returning false stops this method from advancing
+            // claudeMtimes off a write that was never going to happen.
             if (!diskCache && fs.existsSync(this.cache.filePath)) {
                 log.warn('refreshClaudeUsage: cache file exists but read() returned null — refusing to write, would clobber the ledger');
                 return false;

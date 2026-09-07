@@ -133,7 +133,16 @@ export class UsageStatsService {
                         return null;
                     }));
 
-                if (updated && onBackfillComplete) onBackfillComplete(this.deepStatsCache!);
+                // Claude ingestion is filesystem-only and independent of the
+                // language server — it must not be conditional on which
+                // Antigravity path just ran or what it returned. Called here,
+                // unconditionally, so a server-mode pass, a store-mode pass with
+                // nothing dirty, and a store-mode pass that genuinely refreshed
+                // all still pick up new Claude data. See refreshClaudeUsage's
+                // own doc comment for why it lives outside refreshFromStore.
+                const claudeUpdated = await this.refreshClaudeUsage();
+
+                if ((updated || claudeUpdated) && onBackfillComplete) onBackfillComplete(this.deepStatsCache!);
             } finally {
                 this.processLock.release();
             }
@@ -149,9 +158,20 @@ export class UsageStatsService {
             return null;
         }
         try {
-            return this.useServerSource()
-                ? await this.twoPhaseFullFetch(serverInfo, onBackfillComplete, onProgress)
-                : await this.refreshFromStore(serverInfo, null);
+            if (this.useServerSource()) {
+                await this.twoPhaseFullFetch(serverInfo, onBackfillComplete, onProgress);
+            } else {
+                await this.refreshFromStore(serverInfo, null);
+            }
+
+            // Same reasoning as the disk-cache branch above: a cold boot with
+            // zero Antigravity conversations (or one that otherwise returns
+            // early) must not skip Claude ingestion — it has no dependency on
+            // Antigravity having found anything at all.
+            const claudeUpdated = await this.refreshClaudeUsage();
+            if (claudeUpdated && onBackfillComplete) onBackfillComplete(this.deepStatsCache!);
+
+            return this.deepStatsCache;
         } finally {
             this.processLock.release();
         }
@@ -324,22 +344,6 @@ export class UsageStatsService {
         // the same situation specifically to suppress a redundant onBackfillComplete
         // — mirror that here instead of re-aggregating and rewriting an identical
         // cache. this.deepStatsCache is left exactly as the caller already set it.
-        //
-        // Claude ingestion is intentionally NOT consulted before this gate (see
-        // the ingestion call further down, after `fresh` is built): calling it
-        // here would mean this early return — reached by a freshly-constructed
-        // service whose in-memory claudeMtimes is still empty — can no longer be
-        // driven by Antigravity's own dirty state alone, which is exactly what
-        // the "health survives reload" self-check (types.ts) exercises against
-        // this real machine's real Claude corpus. The tradeoff: if Antigravity's
-        // own store has nothing dirty this pass, freshly-changed Claude data
-        // waits for the next pass where Antigravity does — a known gap for a
-        // session that only uses Claude Code and never touches Antigravity. See
-        // the Task 7 report for the full reasoning; flagged rather than fixed
-        // here because fixing it safely requires deferring the this.claudeMtimes
-        // update until after a successful cache.write (to avoid ever advancing
-        // the mtime cache for data that was never persisted), which is more than
-        // this task's wiring should take on unilaterally.
         if (dirty.length === 0) {
             // This is the common case, not an edge case — a quick reload or a
             // second window with nothing new — so the health card must not go
@@ -386,33 +390,9 @@ export class UsageStatsService {
         }
         if (failed > 0) log.warn(`refreshFromStore: ${failed} conversations unreadable this pass; will retry`);
 
-        // Claude ingestion is filesystem-only and has no ServerInfo dependency —
-        // it works even when no Antigravity language server is reachable. Placed
-        // here (Antigravity's own per-convo map is assembled; the ledger merge
-        // is not) rather than earlier in the function, precisely so it is only
-        // reached once this pass is already committed to writing: this.claudeMtimes
-        // is advanced in the same breath as the entries it describes get merged
-        // into `fresh` and persisted by cache.write below, so a thrown error or
-        // an early return can never advance the mtime cache for data that was
-        // never actually saved. presentIds gets every Claude id whose file
-        // exists — never the legacy archive id, which has no backing file and
-        // must be preserved verbatim by mergeIntoLedger forever.
-        try {
-            const claude = await ingestClaudeUsage({ mtimes: this.claudeMtimes });
-            Object.assign(fresh, claude.perConvo);
-            for (const id of claude.ids) {
-                if (id !== LEGACY_CLAUDE_ARCHIVE_ID) presentIds.add(id);
-            }
-            this.claudeMtimes = { ...this.claudeMtimes, ...claude.mtimes };
-        } catch (e: any) {
-            log.warn('Claude ingestion failed; Antigravity data unaffected:', e?.message);
-        }
-
-        // fresh is built only from ids in `dirty` (subset of `conversations`,
-        // i.e. listConversations()'s output) plus whatever Claude ingestion just
-        // added (subset of ingestClaudeUsage's `ids`, added to presentIds above)
-        // — so its keys are always a subset of presentIds. mergeIntoLedger
-        // trusts that invariant rather than checking it.
+        // fresh is built only from ids in `dirty`, which is filtered from `conversations`
+        // (i.e. listConversations()'s output) — so its keys are always a subset of
+        // presentIds. mergeIntoLedger trusts that invariant rather than checking it.
         const merged = mergeIntoLedger(cachedPerConvo, fresh, presentIds);
 
         // The server still owns titles; only usage moved to the store. It tolerates
@@ -460,12 +440,8 @@ export class UsageStatsService {
 
         this.deepStatsCache = stats;
         this.currentPerConvo = merged;
-        // Claude ids are namespaced (`claude:`), so folding this.claudeMtimes
-        // into the shared mtimes map here cannot collide with Antigravity's
-        // own entries — this is what makes a later launch's seed (see
-        // fetchDeepStats) skip re-parsing unchanged Claude transcripts.
         this.cache.write(merged, Object.keys(merged), stats, titleMap,
-            this.currentStepCounts, diskCache?.entryCounts, { ...mtimes, ...this.claudeMtimes }, countingChangedAt ?? undefined);
+            this.currentStepCounts, diskCache?.entryCounts, mtimes, countingChangedAt ?? undefined);
         log.info(`refreshFromStore: complete — ${stats.totalCalls} calls across ${Object.keys(merged).length} conversations`);
 
         // Non-blocking: compare a few conversations the server can still serve.
@@ -481,6 +457,99 @@ export class UsageStatsService {
         })();
 
         return stats;
+    }
+
+    /**
+     * Ingest Claude usage and fold it into the ledger — filesystem-only,
+     * independent of the language server and of which Antigravity path (if
+     * any) just ran or what it returned. Called once per fetchDeepStats
+     * refresh, from both the disk-cache branch (after incrementalRefresh or
+     * refreshFromStore) and the cold-boot branch (after twoPhaseFullFetch or
+     * refreshFromStore) — never nested inside either, and never gated on
+     * their result, so a server-mode pass, a store-mode pass with nothing
+     * dirty, and a from-scratch cold boot all still pick up new Claude data.
+     * Not called on the memory-cache-hit early return (nothing else refreshes
+     * there either) or when another window holds the process lock (this
+     * method is only ever invoked from inside the same lock-guarded sections
+     * fetchDeepStats already acquired for the Antigravity path).
+     *
+     * This used to live inside refreshFromStore's own merge site, gated by
+     * that function's dirty.length===0 early return — which meant Claude data
+     * only updated when Antigravity's own store also had something dirty
+     * that pass. Hoisting it here removes that coupling entirely.
+     *
+     * Merges against whatever is currently on disk (freshest — the
+     * Antigravity path above already wrote its own result there, if
+     * anything changed) rather than an in-memory snapshot, and re-reads
+     * after writing to confirm the write actually landed before advancing
+     * this.claudeMtimes: cache.write() swallows its own fs errors (logs and
+     * returns normally, never throws), so a try/catch around the write call
+     * alone would never detect a failure. Without this read-back check, a
+     * failed write would still advance the mtime cache in memory, and the
+     * next ingestClaudeUsage call would then skip re-parsing files whose
+     * entries were never actually saved — silent, permanent data loss.
+     *
+     * Returns whether anything new was actually persisted, so callers can
+     * fold it into their own onBackfillComplete decision.
+     */
+    private async refreshClaudeUsage(): Promise<boolean> {
+        try {
+            const claude = await ingestClaudeUsage({ mtimes: this.claudeMtimes });
+
+            if (Object.keys(claude.perConvo).length === 0) {
+                // Every discovered file's mtime already matched what we knew —
+                // nothing to merge or write. Still safe to fold claude.mtimes in
+                // immediately: every id here is either unchanged since a prior
+                // pass that itself confirmed its write (per this same
+                // invariant), or has genuinely never had any entries.
+                this.claudeMtimes = { ...this.claudeMtimes, ...claude.mtimes };
+                return false;
+            }
+
+            const diskCache = this.cache.read();
+            const existingPerConvo = diskCache?.perConvo || this.currentPerConvo || {};
+
+            // presentIds carries only the Claude ids this pass discovered —
+            // never LEGACY_CLAUDE_ARCHIVE_ID, which has no backing file and must
+            // be preserved verbatim, and never any Antigravity id: this pass
+            // does not touch Antigravity data, and mergeIntoLedger treats
+            // anything absent from presentIds as "no file this pass, preserve
+            // verbatim" — exactly the right behavior for ids this pass simply
+            // isn't looking at.
+            const presentIds = new Set<string>();
+            for (const id of claude.ids) {
+                if (id !== LEGACY_CLAUDE_ARCHIVE_ID) presentIds.add(id);
+            }
+            const merged = mergeIntoLedger(existingPerConvo, claude.perConvo, presentIds);
+
+            const titleMap = this.currentTitleMap.size > 0
+                ? this.currentTitleMap
+                : new Map<string, string>(Object.entries(diskCache?.titleMap || {}));
+            const stats = aggregateFromPerConvo(merged, titleMap);
+            // Preserve whatever health/countingChangedAt the Antigravity path
+            // already established this cycle (if any ran) — this write only
+            // adds Claude data and must not regress either.
+            if (this.lastHealth) stats.health = this.lastHealth;
+
+            const mtimesForWrite = { ...(diskCache?.mtimes || {}), ...claude.mtimes };
+            this.cache.write(merged, Object.keys(merged), stats, titleMap,
+                this.currentStepCounts, diskCache?.entryCounts, mtimesForWrite, diskCache?.countingChangedAt);
+
+            this.deepStatsCache = stats;
+            this.currentPerConvo = merged;
+
+            const verify = this.cache.read();
+            const persisted = !!verify && Object.keys(claude.mtimes).every(id => verify.mtimes?.[id] === claude.mtimes[id]);
+            if (persisted) {
+                this.claudeMtimes = { ...this.claudeMtimes, ...claude.mtimes };
+            } else {
+                log.warn('Claude ingestion: cache write did not persist — mtimes not advanced, will retry next pass');
+            }
+            return persisted;
+        } catch (e: any) {
+            log.warn('Claude ingestion failed; Antigravity data unaffected:', e?.message);
+            return false;
+        }
     }
 
     /**

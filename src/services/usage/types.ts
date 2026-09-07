@@ -1683,144 +1683,273 @@ if (require.main === module && process.argv.includes('--self-check')) {
             console.log('claude ingestion: all checks passed');
         }
 
-        // ─── Task 7: Claude ingestion wired into refreshFromStore (service path) ───
-        // Headless replacement for the brief's Step 6 (launch the extension host
-        // with F5 and inspect the panel) — no IDE is available here. Reuses the
-        // "health survives reload" section's own machinery above (a real
-        // UsageStatsService via require('./index'), a TestCache subclass
-        // redirecting StatsCache.filePath to a temp file, and a withWarnMuted
-        // helper for the deliberately-unreachable fakeServerInfo) rather than
-        // building a parallel harness, since that section already proves the
-        // exact same shape of claim — a real disk write/read round trip through
-        // the real private refreshFromStore method — for Antigravity data; this
-        // section proves it for Claude data and the archive-preservation
-        // guarantee specifically, end to end through the service, not just
-        // through migrateV2ToV3 and read() in isolation.
+        // ─── Task 7 (revised): Claude ingestion hoisted to fetchDeepStats ───
+        // The original placement (inside refreshFromStore's own merge site,
+        // gated by that function's dirty.length===0 early return) meant Claude
+        // data only updated when Antigravity's own store ALSO had something
+        // dirty that pass — never on a server-mode ('usageSource: server')
+        // pass, and never on a cold boot. This section replaces the old
+        // refreshFromStore-based section entirely (that placement no longer
+        // touches Claude data at all — see index.ts) with two parts:
+        //   A. refreshClaudeUsage() exercised directly — the core merge,
+        //      archive-preservation, and mtime-ordering logic, independent of
+        //      which (if any) Antigravity path ran.
+        //   B. fetchDeepStats's wiring — proving the call fires from BOTH call
+        //      sites (disk-cache branch and cold-boot branch), regardless of
+        //      useServerSource() or what the Antigravity path returned.
+        // Headless replacement for the brief's Step 6 (launch the extension
+        // host with F5 and inspect the panel) — no IDE is available here.
+
+        // ─── A: refreshClaudeUsage — cold ingest, archive survival, warm no-op ───
+        let claudeKeysHoistA: string[] = [];
         {
-            const { UsageStatsService: UsageStatsServiceT7 } = require('./index');
-            const { StatsCache: StatsCacheT7 } = require('./cache');
-            const fsT7 = require('fs'); const pathT7 = require('path'); const osT7 = require('os');
+            const fsA = require('fs'); const pathA = require('path'); const osA = require('os');
+            const { UsageStatsService: UsageStatsServiceA } = require('./index');
+            const { StatsCache: StatsCacheA } = require('./cache');
 
-            const tmpCacheT7 = pathT7.join(osT7.tmpdir(), 'ag-switchboard-selfcheck-claude-refresh.json');
-            try { fsT7.unlinkSync(tmpCacheT7); } catch { /* absent is fine */ }
-            class TestCacheT7 extends StatsCacheT7 {
-                get filePath() { return tmpCacheT7; }
+            const tmpCacheA = pathA.join(osA.tmpdir(), 'ag-switchboard-selfcheck-claude-hoist-a.json');
+            try { fsA.unlinkSync(tmpCacheA); } catch { /* absent is fine */ }
+            class TestCacheA extends StatsCacheA {
+                get filePath() { return tmpCacheA; }
             }
-            const testCacheT7 = new TestCacheT7();
-
-            const withWarnMutedT7 = async (fn: () => Promise<any>): Promise<any> => {
-                const original = console.warn;
-                console.warn = () => { /* expected: ECONNREFUSED from the deliberately closed fakeServerInfoT7 port */ };
-                try { return await fn(); } finally { console.warn = original; }
-            };
+            const testCacheA = new TestCacheA();
 
             // Seed only the legacy archive convo — it has no backing file, so it
-            // is the one entry that must NEVER be re-derived from a re-read, only
-            // ever carried forward verbatim. Every real Antigravity conversation
-            // on this machine starts absent from perConvo, so the very first
-            // refreshFromStore call below is a genuine cold, full pass (every
-            // conversation reads as dirty) — the realistic worst case for the
-            // performance numbers measured further down.
-            const archiveEntryT7 = {
+            // is the one entry that must NEVER be re-derived from a re-read,
+            // only ever carried forward verbatim.
+            const archiveEntryA = {
                 ts: '2020-01-01T00:00:00.000Z', model: 'archived-model', provider: 'claude',
                 input: 999, output: 111, cache: 0, cacheWrite: 0, reasoning: 0,
             };
-            const seededPerConvoT7 = { [LEGACY_CLAUDE_ARCHIVE_ID]: { entries: [archiveEntryT7] } };
-            const seededStatsT7 = aggregateFromPerConvo(seededPerConvoT7 as any, new Map());
-            testCacheT7.write(seededPerConvoT7, [LEGACY_CLAUDE_ARCHIVE_ID], seededStatsT7, new Map(), undefined, undefined, {}, undefined);
+            const seededPerConvoA = { [LEGACY_CLAUDE_ARCHIVE_ID]: { entries: [archiveEntryA] } };
+            const seededStatsA = aggregateFromPerConvo(seededPerConvoA as any, new Map());
+            testCacheA.write(seededPerConvoA, [LEGACY_CLAUDE_ARCHIVE_ID], seededStatsA, new Map(), undefined, undefined, {}, undefined);
 
-            const seededDiskT7 = testCacheT7.read();
-            assert.ok(seededDiskT7, 'the seeded temp cache reads back');
-            assert.strictEqual(seededDiskT7.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries.length, 1,
-                'sanity: the archive was seeded with exactly one entry, so the byte-identical check below is not vacuous');
+            const svcA = new UsageStatsServiceA();
+            svcA.cache = testCacheA;
+            assert.strictEqual(Object.keys(svcA.claudeMtimes).length, 0,
+                'sanity: a fresh service instance starts with no known Claude mtimes, so the call below is a genuine cold ingest');
 
-            const svcT7 = new UsageStatsServiceT7();
-            svcT7.cache = testCacheT7;
-            const fakeServerInfoT7 = { port: 59997, csrfToken: 'fake', protocol: 'http' };
+            // ─── cold call: real Claude corpus on this machine, nothing known yet ───
+            const tColdA = Date.now();
+            const coldPersistedA = await svcA.refreshClaudeUsage();
+            const coldMsA = Date.now() - tColdA;
+            assert.strictEqual(coldPersistedA, true,
+                'refreshClaudeUsage: a cold call with real Claude data to ingest reports true (persisted)');
 
-            // ─── cold pass: every real Antigravity conversation is dirty (nothing
-            // but the archive was seeded), and this.claudeMtimes starts empty, so
-            // Claude ingestion also runs cold — through the real service. ───
-            const tColdT7 = Date.now();
-            const coldResultT7 = await withWarnMutedT7(() => svcT7.refreshFromStore(fakeServerInfoT7, seededDiskT7));
-            const coldMsT7 = Date.now() - tColdT7;
-            assert.ok(coldResultT7, 'a from-scratch temp cache makes every real conversation dirty — this must be a real, non-early-return pass');
+            const afterColdA = testCacheA.read();
+            assert.ok(afterColdA, 'the cache persisted after the cold call');
 
-            const persistedColdT7 = testCacheT7.read();
-            assert.ok(persistedColdT7, 'the cache persisted after the cold pass');
-
-            // 1. Claude entries land in the persisted ledger under claude:-prefixed keys.
-            const claudeKeysT7 = Object.keys(persistedColdT7.perConvo)
+            // 1. Claude entries land under claude:-prefixed keys.
+            claudeKeysHoistA = Object.keys(afterColdA.perConvo)
                 .filter((k: string) => isClaudeConvo(k) && k !== LEGACY_CLAUDE_ARCHIVE_ID);
-            assert.ok(claudeKeysT7.length > 0,
-                'at least one claude:-prefixed key landed in the persisted ledger after a real service-path refresh');
+            assert.ok(claudeKeysHoistA.length > 0,
+                'refreshClaudeUsage: claude:-prefixed entries land in the persisted ledger — guarantee 1 (Claude entries persisted)');
 
-            // 2. The archive convo survives, entries byte-identical.
-            assert.ok(persistedColdT7.perConvo[LEGACY_CLAUDE_ARCHIVE_ID],
-                'claude-code-imported survives a real service-path refresh');
-            assert.deepStrictEqual(persistedColdT7.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries, [archiveEntryT7],
-                'the archive entries are byte-identical after the refresh — proof that claude-code-imported was ' +
-                'never added to presentIds, so mergeIntoLedger preserved it verbatim rather than treating it as ' +
-                'absent-and-droppable or re-deriving it from a (nonexistent) file');
-            const archiveTotalT7 = persistedColdT7.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries
+            // 2. Archive convo survives, entries byte-identical.
+            assert.ok(afterColdA.perConvo[LEGACY_CLAUDE_ARCHIVE_ID],
+                'refreshClaudeUsage: claude-code-imported survives a real refresh — guarantee 2 (archive survival)');
+            assert.deepStrictEqual(afterColdA.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries, [archiveEntryA],
+                'refreshClaudeUsage: the archive entries are byte-identical after the refresh — proof that ' +
+                'claude-code-imported was never added to presentIds, so mergeIntoLedger preserved it verbatim — ' +
+                'guarantee 2 (archive survival)');
+            const archiveTotalA = afterColdA.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries
                 .reduce((sum: number, e: any) => sum + e.input + e.output, 0);
-            assert.strictEqual(archiveTotalT7, 999 + 111,
-                'the archive token total is exactly what was seeded, not recomputed, inflated, or dropped');
+            assert.strictEqual(archiveTotalA, 999 + 111,
+                'refreshClaudeUsage: the archive token total is exactly what was seeded, not recomputed or dropped — guarantee 2');
 
-            // 3. The persisted mtimes map contains the Claude ids, so a second
-            // launch (fetchDeepStats' seeding step, see index.ts) would skip
-            // re-parsing them.
-            assert.ok(persistedColdT7.mtimes, 'mtimes persisted');
-            const persistedClaudeMtimeIdsT7 = Object.keys(persistedColdT7.mtimes).filter(isClaudeConvo);
-            assert.ok(persistedClaudeMtimeIdsT7.length > 0,
-                'persisted mtimes map contains Claude ids after the refresh');
+            // 3. Persisted mtimes contains the Claude ids.
+            assert.ok(afterColdA.mtimes, 'mtimes persisted');
+            const persistedClaudeMtimeIdsA = Object.keys(afterColdA.mtimes).filter(isClaudeConvo);
+            assert.ok(persistedClaudeMtimeIdsA.length > 0,
+                'refreshClaudeUsage: persisted mtimes map contains Claude ids — guarantee 3 (mtime persistence)');
             assert.deepStrictEqual(
-                new Set(persistedClaudeMtimeIdsT7),
-                new Set(Object.keys(svcT7.claudeMtimes)),
-                'every Claude id the in-memory claudeMtimes map knows about made it into the persisted mtimes map — ' +
-                'the exact invariant a second launch\'s seed step (fetchDeepStats) depends on',
+                new Set(persistedClaudeMtimeIdsA), new Set(Object.keys(svcA.claudeMtimes)),
+                'refreshClaudeUsage: every Claude id the in-memory claudeMtimes map knows about made it into the ' +
+                'persisted mtimes map — guarantee 3 (mtime persistence), the invariant a second launch\'s seed step depends on',
             );
 
-            // ─── no-change pass: bump one real Antigravity conversation's cached
-            // mtime backward to force a real (non-early-return) pass through the
-            // full function body — same technique as the "health survives reload"
-            // section's own dirty pass above — but this time with this.claudeMtimes
-            // already warm from the cold pass just above. This is the scenario
-            // that actually exercises ingestClaudeUsage's own mtime gate THROUGH
-            // the service path, as opposed to standalone (already proven in the
-            // "claude ingestion" section further up): if this exceeds budget, the
-            // mtime gate is not short-circuiting through the service path even
-            // though it does standalone.
-            const conversationsT7 = listConversations();
-            let warmMsT7 = -1;
-            if (conversationsT7.length === 0) {
-                console.log('Task 7 service refresh: no-change timing SKIPPED — no conversations on this machine');
-            } else {
-                const dirtyTargetT7 = conversationsT7[0];
-                const dirtyDiskT7 = testCacheT7.read();
-                dirtyDiskT7.mtimes[dirtyTargetT7.id] = dirtyTargetT7.mtimeMs - 1;
+            // ─── warm call: same instance, this.claudeMtimes already warm ───
+            const tWarmA = Date.now();
+            const warmPersistedA = await svcA.refreshClaudeUsage();
+            const warmMsA = Date.now() - tWarmA;
+            assert.strictEqual(warmPersistedA, false,
+                'refreshClaudeUsage: a second call with nothing changed reports false (no new persist) — the mtime gate short-circuited');
 
-                const tWarmT7 = Date.now();
-                const warmResultT7 = await withWarnMutedT7(() => svcT7.refreshFromStore(fakeServerInfoT7, dirtyDiskT7));
-                warmMsT7 = Date.now() - tWarmT7;
-                assert.ok(warmResultT7, 'the bumped conversation makes this a real pass, not an early return');
+            const afterWarmA = testCacheA.read();
+            const warmClaudeKeysA = Object.keys(afterWarmA.perConvo)
+                .filter((k: string) => isClaudeConvo(k) && k !== LEGACY_CLAUDE_ARCHIVE_ID);
+            assert.deepStrictEqual(new Set(warmClaudeKeysA), new Set(claudeKeysHoistA),
+                'refreshClaudeUsage: the warm call adds or loses no Claude ids');
+            assert.deepStrictEqual(afterWarmA.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries, [archiveEntryA],
+                'refreshClaudeUsage: the archive survives a SECOND call unchanged too — guarantee 2 (archive survival)');
 
-                const persistedWarmT7 = testCacheT7.read();
-                const warmClaudeKeysT7 = Object.keys(persistedWarmT7.perConvo)
-                    .filter((k: string) => isClaudeConvo(k) && k !== LEGACY_CLAUDE_ARCHIVE_ID);
-                assert.deepStrictEqual(new Set(warmClaudeKeysT7), new Set(claudeKeysT7),
-                    'no Claude ids were added or lost on the warm pass — nothing on disk actually changed between the two calls');
-                assert.deepStrictEqual(persistedWarmT7.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries, [archiveEntryT7],
-                    'the archive survives a SECOND real service-path refresh unchanged too');
+            fsA.unlinkSync(tmpCacheA);
+            console.log(`refreshClaudeUsage direct: all checks passed (cold ${coldMsA}ms over ${claudeKeysHoistA.length} claude ids, warm ${warmMsA}ms)`);
+        }
 
-                if (warmMsT7 > 5000) {
-                    console.warn(`Task 7 service refresh: warm pass took ${warmMsT7}ms — investigate before merging (mtime gate may not be short-circuiting through the service path)`);
-                }
+        // ─── A3: mtimes must NOT advance when the persist did not happen ───
+        // cache.write() swallows its own fs errors internally (logs a WARN and
+        // returns normally — it never throws), so a try/catch around the write
+        // call alone could never detect this. Points filePath at a directory
+        // that is deliberately never created, so the real fs.writeFileSync
+        // inside write() throws ENOENT — a genuine, constructed failed-write,
+        // not a simulated one.
+        {
+            const fsA3 = require('fs'); const pathA3 = require('path'); const osA3 = require('os');
+            const { UsageStatsService: UsageStatsServiceA3 } = require('./index');
+            const { StatsCache: StatsCacheA3 } = require('./cache');
+
+            const brokenDirA3 = pathA3.join(osA3.tmpdir(), `ag-switchboard-selfcheck-claude-brokenpath-${Date.now()}`);
+            const brokenPathA3 = pathA3.join(brokenDirA3, 'does-not-exist', 'cache.json');
+            class BrokenTestCacheA3 extends StatsCacheA3 {
+                get filePath() { return brokenPathA3; }
+            }
+            const svcA3 = new UsageStatsServiceA3();
+            svcA3.cache = new BrokenTestCacheA3();
+            assert.strictEqual(Object.keys(svcA3.claudeMtimes).length, 0, 'sanity: fresh instance, no known Claude mtimes yet');
+
+            const withWarnMutedA3 = async (fn: () => Promise<any>): Promise<any> => {
+                const original = console.warn;
+                console.warn = () => { /* expected: "Failed to write disk cache" from the deliberately unwritable path */ };
+                try { return await fn(); } finally { console.warn = original; }
+            };
+
+            const persistedA3 = await withWarnMutedA3(() => svcA3.refreshClaudeUsage());
+            assert.strictEqual(persistedA3, false,
+                'refreshClaudeUsage: reports false when the write could not be confirmed — guarantee 4 (mtime ordering)');
+            assert.strictEqual(Object.keys(svcA3.claudeMtimes).length, 0,
+                'refreshClaudeUsage: claudeMtimes must NOT advance when the persist did not happen — guarantee 4 (mtime ' +
+                'ordering) — otherwise the next pass would skip re-parsing files whose entries were never actually saved');
+            assert.ok(!fsA3.existsSync(brokenPathA3), 'sanity: the broken path genuinely never got written to');
+
+            console.log('refreshClaudeUsage failed-write: all checks passed (mtimes did not advance)');
+        }
+
+        // ─── B: fetchDeepStats calls Claude ingestion unconditionally, from
+        // BOTH call sites, regardless of useServerSource() or what the
+        // Antigravity path returned. processLock is faked (an in-memory
+        // stand-in matching its {acquire, release} shape) rather than driven
+        // for real, since ProcessLock's lock file path
+        // (~/.gemini/antigravity/brain/.deep_stats_cache.lock) has no
+        // filePath-style override and this section must never touch real
+        // shared state outside a temp file. incrementalRefresh/refreshFromStore
+        // are stubbed per sub-test (own-property override — TypeScript
+        // `private` has no runtime effect) rather than driven for real,
+        // because incrementalRefresh needs a reachable language server (not
+        // available in this environment) and driving refreshFromStore for
+        // real would re-couple this section to this machine's real 136
+        // Antigravity conversations — exactly the coupling that made the
+        // pre-hoist "health survives reload" section's dirty:0 fixture
+        // incompatible with ingestion running unconditionally. What stays
+        // real: fetchDeepStats's own branch selection, the process-lock
+        // acquire/release call sequence (against the fake), the cache
+        // (temp-redirected StatsCache), and refreshClaudeUsage itself. ───
+        {
+            const fsB = require('fs'); const pathB = require('path'); const osB = require('os');
+            const { UsageStatsService: UsageStatsServiceB } = require('./index');
+            const { StatsCache: StatsCacheB } = require('./cache');
+
+            const fakeLockB = () => ({
+                acquire: () => true,
+                release: () => { /* no-op */ },
+                heartbeat: () => { /* no-op */ },
+            });
+            const fakeServerInfoB = { port: 59996, csrfToken: 'fake', protocol: 'http' };
+
+            const makeSeededCacheB = (suffix: string) => {
+                const p = pathB.join(osB.tmpdir(), `ag-switchboard-selfcheck-claude-hoist-b-${suffix}.json`);
+                try { fsB.unlinkSync(p); } catch { /* absent is fine */ }
+                class TestCacheB extends StatsCacheB { get filePath() { return p; } }
+                const c = new TestCacheB();
+                const seeded = {
+                    [LEGACY_CLAUDE_ARCHIVE_ID]: {
+                        entries: [{ ts: '2020-01-01T00:00:00.000Z', model: 'm', provider: 'claude', input: 1, output: 1, cache: 0, cacheWrite: 0, reasoning: 0 }],
+                    },
+                };
+                const stats = aggregateFromPerConvo(seeded as any, new Map());
+                c.write(seeded, [LEGACY_CLAUDE_ARCHIVE_ID], stats, new Map(), undefined, undefined, {}, undefined);
+                return { path: p, cache: c };
+            };
+
+            // B1 — store mode, disk cache present, Antigravity finds nothing
+            // dirty (stubbed refreshFromStore -> null, the real dirty.length===0
+            // outcome). This is precisely the scenario that regressed before the
+            // hoist: the ingestion call used to live inside refreshFromStore
+            // itself, gated by that same early return, so this case never
+            // ingested Claude data. (Verified: with the two refreshClaudeUsage()
+            // call sites in fetchDeepStats commented out, this assertion fails
+            // — 0 claude keys land — confirming this is a real regression test
+            // for today's gap, not a vacuous one.)
+            {
+                const { cache, path } = makeSeededCacheB('b1');
+                const svc = new UsageStatsServiceB();
+                svc.cache = cache;
+                svc.processLock = fakeLockB();
+                svc.useServerSource = () => false;
+                svc.refreshFromStore = async () => null;
+                let backfillFired = false;
+                const result = await svc.fetchDeepStats(fakeServerInfoB, false, () => { backfillFired = true; });
+                assert.ok(result, 'fetchDeepStats (store mode, nothing dirty): still returns stats');
+                const persisted = cache.read();
+                const claudeKeys = Object.keys(persisted.perConvo).filter((k: string) => isClaudeConvo(k) && k !== LEGACY_CLAUDE_ARCHIVE_ID);
+                assert.ok(claudeKeys.length > 0,
+                    'B1: store mode with refreshFromStore reporting nothing dirty still ingests Claude data — the exact gap the hoist fixes');
+                assert.ok(backfillFired,
+                    'B1: onBackfillComplete fires when only Claude data changed, even though the Antigravity path itself reported nothing updated');
+                fsB.unlinkSync(path);
             }
 
-            fsT7.unlinkSync(tmpCacheT7);
-            console.log(`Task 7 service refresh: all checks passed (cold ${coldMsT7}ms over ${claudeKeysT7.length} claude ids` +
-                (warmMsT7 >= 0 ? `, warm-claude-cache pass ${warmMsT7}ms)` : ')'));
+            // B2 — server mode (incrementalRefresh) — a path that never calls
+            // refreshFromStore at all, even before the hoist. incrementalRefresh
+            // is stubbed to "nothing to fetch" (false) since the real method
+            // needs a reachable language server.
+            {
+                const { cache, path } = makeSeededCacheB('b2');
+                const svc = new UsageStatsServiceB();
+                svc.cache = cache;
+                svc.processLock = fakeLockB();
+                svc.useServerSource = () => true;
+                svc.incrementalRefresh = async () => false;
+                const result = await svc.fetchDeepStats(fakeServerInfoB, false);
+                assert.ok(result, 'fetchDeepStats (server mode): still returns stats');
+                const persisted = cache.read();
+                const claudeKeys = Object.keys(persisted.perConvo).filter((k: string) => isClaudeConvo(k) && k !== LEGACY_CLAUDE_ARCHIVE_ID);
+                assert.ok(claudeKeys.length > 0,
+                    'B2: a path that never calls refreshFromStore (server-mode incrementalRefresh) still ingests Claude data');
+                fsB.unlinkSync(path);
+            }
+
+            // B3 — cold boot: no disk cache exists at all yet, exercising the
+            // SECOND, structurally distinct call site in fetchDeepStats (the
+            // no-diskCache branch) via its store-mode sub-path
+            // (refreshFromStore(serverInfo, null), stubbed). twoPhaseFullFetch's
+            // own server-mode sub-path of this same branch was not driven
+            // separately — see the report for why and what a human should check.
+            {
+                const p = pathB.join(osB.tmpdir(), 'ag-switchboard-selfcheck-claude-hoist-b3.json');
+                try { fsB.unlinkSync(p); } catch { /* absent is fine */ }
+                class TestCacheB3 extends StatsCacheB { get filePath() { return p; } }
+                const cache = new TestCacheB3();
+                assert.strictEqual(cache.read(), null, 'sanity: nothing has ever been written to this path — a genuine cold boot');
+
+                const svc = new UsageStatsServiceB();
+                svc.cache = cache;
+                svc.processLock = fakeLockB();
+                svc.useServerSource = () => false;
+                svc.refreshFromStore = async () => null;
+                const result = await svc.fetchDeepStats(fakeServerInfoB, false);
+                assert.ok(result, 'fetchDeepStats (cold boot): still returns stats');
+                const persisted = cache.read();
+                assert.ok(persisted, 'B3: cold boot creates a cache from Claude data alone — no Antigravity data was ever written');
+                const claudeKeys = Object.keys(persisted.perConvo).filter(isClaudeConvo);
+                assert.ok(claudeKeys.length > 0,
+                    'B3: a from-scratch cold boot with zero Antigravity data still ingests Claude data — also closes the ' +
+                    '"conversations.length===0" gap noted in the Task 7 report, as a side effect of the hoist');
+                fsB.unlinkSync(p);
+            }
+
+            console.log('fetchDeepStats -> refreshClaudeUsage wiring: all checks passed (store-mode dirty:0, server-mode, cold-boot)');
         }
     })();
 }

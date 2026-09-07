@@ -24,9 +24,11 @@ import {
     ConvoTokenData, DiskCacheData, TokenEntry,
     EP, BATCH_CONCURRENCY, HOT_THRESHOLD_MS, FETCH_TIMEOUT_MS,
     entryFingerprint, mergePreferredEntry, isConvoDirty,
+    isClaudeConvo, LEGACY_CLAUDE_ARCHIVE_ID,
 } from './types';
 import { aggregateFromPerConvo, extractTokens } from './aggregator';
 import { StatsCache, mergeIntoLedger } from './cache';
+import { ingestClaudeUsage } from './claude';
 import { ProcessLock } from './processLock';
 import { getGlobalIndexData } from '../../shared/titleResolver';
 import { BRAIN_DIR, CONVERSATIONS_DIR } from '../../shared/agPaths';
@@ -49,6 +51,16 @@ export class UsageStatsService {
     private currentPerConvo: Record<string, ConvoTokenData> = {};
     private currentTitleMap: Map<string, string> = new Map();
     private currentStepCounts: Map<string, number> = new Map();
+
+    /**
+     * Claude ledger ids → last-parsed mtime. Filesystem-only, independent of
+     * the Antigravity store/server. Persisted through the shared `mtimes`
+     * field on DiskCacheData (Claude ids are `claude:`-namespaced so they
+     * cannot collide with Antigravity ids there); seeded from disk on load
+     * (see fetchDeepStats) so a fresh launch does not re-parse every
+     * transcript on disk.
+     */
+    private claudeMtimes: Record<string, number> = {};
 
     /** Raw (pre-dedup) meta/steps counts per conversation — for correct offset-based delta */
     private rawFetchCounts: Record<string, { meta: number; steps: number }> = {};
@@ -92,6 +104,17 @@ export class UsageStatsService {
         if (diskCache) {
             this.deepStatsCache = diskCache.stats;
             log.diag(`fetchDeepStats: disk cache hit — ${diskCache.fetchedIds.length} conversations`);
+
+            // Seed once per process lifetime, from whatever this launch's disk
+            // read found — Claude ids are namespaced, so the shared mtimes map
+            // is safe to split by isClaudeConvo. Guarded so a later disk read
+            // within the same session (forceRefresh) never clobbers mtimes
+            // already advanced in memory by a Claude ingestion pass.
+            if (Object.keys(this.claudeMtimes).length === 0) {
+                this.claudeMtimes = Object.fromEntries(
+                    Object.entries(diskCache.mtimes ?? {}).filter(([id]) => isClaudeConvo(id)),
+                );
+            }
 
             // Cross-process lock: only 1 window fetches, others read cache only
             if (!this.processLock.acquire()) {
@@ -301,6 +324,22 @@ export class UsageStatsService {
         // the same situation specifically to suppress a redundant onBackfillComplete
         // — mirror that here instead of re-aggregating and rewriting an identical
         // cache. this.deepStatsCache is left exactly as the caller already set it.
+        //
+        // Claude ingestion is intentionally NOT consulted before this gate (see
+        // the ingestion call further down, after `fresh` is built): calling it
+        // here would mean this early return — reached by a freshly-constructed
+        // service whose in-memory claudeMtimes is still empty — can no longer be
+        // driven by Antigravity's own dirty state alone, which is exactly what
+        // the "health survives reload" self-check (types.ts) exercises against
+        // this real machine's real Claude corpus. The tradeoff: if Antigravity's
+        // own store has nothing dirty this pass, freshly-changed Claude data
+        // waits for the next pass where Antigravity does — a known gap for a
+        // session that only uses Claude Code and never touches Antigravity. See
+        // the Task 7 report for the full reasoning; flagged rather than fixed
+        // here because fixing it safely requires deferring the this.claudeMtimes
+        // update until after a successful cache.write (to avoid ever advancing
+        // the mtime cache for data that was never persisted), which is more than
+        // this task's wiring should take on unilaterally.
         if (dirty.length === 0) {
             // This is the common case, not an edge case — a quick reload or a
             // second window with nothing new — so the health card must not go
@@ -347,9 +386,33 @@ export class UsageStatsService {
         }
         if (failed > 0) log.warn(`refreshFromStore: ${failed} conversations unreadable this pass; will retry`);
 
-        // fresh is built only from ids in `dirty`, which is filtered from `conversations`
-        // (i.e. listConversations()'s output) — so its keys are always a subset of
-        // presentIds. mergeIntoLedger trusts that invariant rather than checking it.
+        // Claude ingestion is filesystem-only and has no ServerInfo dependency —
+        // it works even when no Antigravity language server is reachable. Placed
+        // here (Antigravity's own per-convo map is assembled; the ledger merge
+        // is not) rather than earlier in the function, precisely so it is only
+        // reached once this pass is already committed to writing: this.claudeMtimes
+        // is advanced in the same breath as the entries it describes get merged
+        // into `fresh` and persisted by cache.write below, so a thrown error or
+        // an early return can never advance the mtime cache for data that was
+        // never actually saved. presentIds gets every Claude id whose file
+        // exists — never the legacy archive id, which has no backing file and
+        // must be preserved verbatim by mergeIntoLedger forever.
+        try {
+            const claude = await ingestClaudeUsage({ mtimes: this.claudeMtimes });
+            Object.assign(fresh, claude.perConvo);
+            for (const id of claude.ids) {
+                if (id !== LEGACY_CLAUDE_ARCHIVE_ID) presentIds.add(id);
+            }
+            this.claudeMtimes = { ...this.claudeMtimes, ...claude.mtimes };
+        } catch (e: any) {
+            log.warn('Claude ingestion failed; Antigravity data unaffected:', e?.message);
+        }
+
+        // fresh is built only from ids in `dirty` (subset of `conversations`,
+        // i.e. listConversations()'s output) plus whatever Claude ingestion just
+        // added (subset of ingestClaudeUsage's `ids`, added to presentIds above)
+        // — so its keys are always a subset of presentIds. mergeIntoLedger
+        // trusts that invariant rather than checking it.
         const merged = mergeIntoLedger(cachedPerConvo, fresh, presentIds);
 
         // The server still owns titles; only usage moved to the store. It tolerates
@@ -397,8 +460,12 @@ export class UsageStatsService {
 
         this.deepStatsCache = stats;
         this.currentPerConvo = merged;
+        // Claude ids are namespaced (`claude:`), so folding this.claudeMtimes
+        // into the shared mtimes map here cannot collide with Antigravity's
+        // own entries — this is what makes a later launch's seed (see
+        // fetchDeepStats) skip re-parsing unchanged Claude transcripts.
         this.cache.write(merged, Object.keys(merged), stats, titleMap,
-            this.currentStepCounts, diskCache?.entryCounts, mtimes, countingChangedAt ?? undefined);
+            this.currentStepCounts, diskCache?.entryCounts, { ...mtimes, ...this.claudeMtimes }, countingChangedAt ?? undefined);
         log.info(`refreshFromStore: complete — ${stats.totalCalls} calls across ${Object.keys(merged).length} conversations`);
 
         // Non-blocking: compare a few conversations the server can still serve.

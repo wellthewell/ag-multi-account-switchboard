@@ -1682,6 +1682,146 @@ if (require.main === module && process.argv.includes('--self-check')) {
 
             console.log('claude ingestion: all checks passed');
         }
+
+        // ─── Task 7: Claude ingestion wired into refreshFromStore (service path) ───
+        // Headless replacement for the brief's Step 6 (launch the extension host
+        // with F5 and inspect the panel) — no IDE is available here. Reuses the
+        // "health survives reload" section's own machinery above (a real
+        // UsageStatsService via require('./index'), a TestCache subclass
+        // redirecting StatsCache.filePath to a temp file, and a withWarnMuted
+        // helper for the deliberately-unreachable fakeServerInfo) rather than
+        // building a parallel harness, since that section already proves the
+        // exact same shape of claim — a real disk write/read round trip through
+        // the real private refreshFromStore method — for Antigravity data; this
+        // section proves it for Claude data and the archive-preservation
+        // guarantee specifically, end to end through the service, not just
+        // through migrateV2ToV3 and read() in isolation.
+        {
+            const { UsageStatsService: UsageStatsServiceT7 } = require('./index');
+            const { StatsCache: StatsCacheT7 } = require('./cache');
+            const fsT7 = require('fs'); const pathT7 = require('path'); const osT7 = require('os');
+
+            const tmpCacheT7 = pathT7.join(osT7.tmpdir(), 'ag-switchboard-selfcheck-claude-refresh.json');
+            try { fsT7.unlinkSync(tmpCacheT7); } catch { /* absent is fine */ }
+            class TestCacheT7 extends StatsCacheT7 {
+                get filePath() { return tmpCacheT7; }
+            }
+            const testCacheT7 = new TestCacheT7();
+
+            const withWarnMutedT7 = async (fn: () => Promise<any>): Promise<any> => {
+                const original = console.warn;
+                console.warn = () => { /* expected: ECONNREFUSED from the deliberately closed fakeServerInfoT7 port */ };
+                try { return await fn(); } finally { console.warn = original; }
+            };
+
+            // Seed only the legacy archive convo — it has no backing file, so it
+            // is the one entry that must NEVER be re-derived from a re-read, only
+            // ever carried forward verbatim. Every real Antigravity conversation
+            // on this machine starts absent from perConvo, so the very first
+            // refreshFromStore call below is a genuine cold, full pass (every
+            // conversation reads as dirty) — the realistic worst case for the
+            // performance numbers measured further down.
+            const archiveEntryT7 = {
+                ts: '2020-01-01T00:00:00.000Z', model: 'archived-model', provider: 'claude',
+                input: 999, output: 111, cache: 0, cacheWrite: 0, reasoning: 0,
+            };
+            const seededPerConvoT7 = { [LEGACY_CLAUDE_ARCHIVE_ID]: { entries: [archiveEntryT7] } };
+            const seededStatsT7 = aggregateFromPerConvo(seededPerConvoT7 as any, new Map());
+            testCacheT7.write(seededPerConvoT7, [LEGACY_CLAUDE_ARCHIVE_ID], seededStatsT7, new Map(), undefined, undefined, {}, undefined);
+
+            const seededDiskT7 = testCacheT7.read();
+            assert.ok(seededDiskT7, 'the seeded temp cache reads back');
+            assert.strictEqual(seededDiskT7.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries.length, 1,
+                'sanity: the archive was seeded with exactly one entry, so the byte-identical check below is not vacuous');
+
+            const svcT7 = new UsageStatsServiceT7();
+            svcT7.cache = testCacheT7;
+            const fakeServerInfoT7 = { port: 59997, csrfToken: 'fake', protocol: 'http' };
+
+            // ─── cold pass: every real Antigravity conversation is dirty (nothing
+            // but the archive was seeded), and this.claudeMtimes starts empty, so
+            // Claude ingestion also runs cold — through the real service. ───
+            const tColdT7 = Date.now();
+            const coldResultT7 = await withWarnMutedT7(() => svcT7.refreshFromStore(fakeServerInfoT7, seededDiskT7));
+            const coldMsT7 = Date.now() - tColdT7;
+            assert.ok(coldResultT7, 'a from-scratch temp cache makes every real conversation dirty — this must be a real, non-early-return pass');
+
+            const persistedColdT7 = testCacheT7.read();
+            assert.ok(persistedColdT7, 'the cache persisted after the cold pass');
+
+            // 1. Claude entries land in the persisted ledger under claude:-prefixed keys.
+            const claudeKeysT7 = Object.keys(persistedColdT7.perConvo)
+                .filter((k: string) => isClaudeConvo(k) && k !== LEGACY_CLAUDE_ARCHIVE_ID);
+            assert.ok(claudeKeysT7.length > 0,
+                'at least one claude:-prefixed key landed in the persisted ledger after a real service-path refresh');
+
+            // 2. The archive convo survives, entries byte-identical.
+            assert.ok(persistedColdT7.perConvo[LEGACY_CLAUDE_ARCHIVE_ID],
+                'claude-code-imported survives a real service-path refresh');
+            assert.deepStrictEqual(persistedColdT7.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries, [archiveEntryT7],
+                'the archive entries are byte-identical after the refresh — proof that claude-code-imported was ' +
+                'never added to presentIds, so mergeIntoLedger preserved it verbatim rather than treating it as ' +
+                'absent-and-droppable or re-deriving it from a (nonexistent) file');
+            const archiveTotalT7 = persistedColdT7.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries
+                .reduce((sum: number, e: any) => sum + e.input + e.output, 0);
+            assert.strictEqual(archiveTotalT7, 999 + 111,
+                'the archive token total is exactly what was seeded, not recomputed, inflated, or dropped');
+
+            // 3. The persisted mtimes map contains the Claude ids, so a second
+            // launch (fetchDeepStats' seeding step, see index.ts) would skip
+            // re-parsing them.
+            assert.ok(persistedColdT7.mtimes, 'mtimes persisted');
+            const persistedClaudeMtimeIdsT7 = Object.keys(persistedColdT7.mtimes).filter(isClaudeConvo);
+            assert.ok(persistedClaudeMtimeIdsT7.length > 0,
+                'persisted mtimes map contains Claude ids after the refresh');
+            assert.deepStrictEqual(
+                new Set(persistedClaudeMtimeIdsT7),
+                new Set(Object.keys(svcT7.claudeMtimes)),
+                'every Claude id the in-memory claudeMtimes map knows about made it into the persisted mtimes map — ' +
+                'the exact invariant a second launch\'s seed step (fetchDeepStats) depends on',
+            );
+
+            // ─── no-change pass: bump one real Antigravity conversation's cached
+            // mtime backward to force a real (non-early-return) pass through the
+            // full function body — same technique as the "health survives reload"
+            // section's own dirty pass above — but this time with this.claudeMtimes
+            // already warm from the cold pass just above. This is the scenario
+            // that actually exercises ingestClaudeUsage's own mtime gate THROUGH
+            // the service path, as opposed to standalone (already proven in the
+            // "claude ingestion" section further up): if this exceeds budget, the
+            // mtime gate is not short-circuiting through the service path even
+            // though it does standalone.
+            const conversationsT7 = listConversations();
+            let warmMsT7 = -1;
+            if (conversationsT7.length === 0) {
+                console.log('Task 7 service refresh: no-change timing SKIPPED — no conversations on this machine');
+            } else {
+                const dirtyTargetT7 = conversationsT7[0];
+                const dirtyDiskT7 = testCacheT7.read();
+                dirtyDiskT7.mtimes[dirtyTargetT7.id] = dirtyTargetT7.mtimeMs - 1;
+
+                const tWarmT7 = Date.now();
+                const warmResultT7 = await withWarnMutedT7(() => svcT7.refreshFromStore(fakeServerInfoT7, dirtyDiskT7));
+                warmMsT7 = Date.now() - tWarmT7;
+                assert.ok(warmResultT7, 'the bumped conversation makes this a real pass, not an early return');
+
+                const persistedWarmT7 = testCacheT7.read();
+                const warmClaudeKeysT7 = Object.keys(persistedWarmT7.perConvo)
+                    .filter((k: string) => isClaudeConvo(k) && k !== LEGACY_CLAUDE_ARCHIVE_ID);
+                assert.deepStrictEqual(new Set(warmClaudeKeysT7), new Set(claudeKeysT7),
+                    'no Claude ids were added or lost on the warm pass — nothing on disk actually changed between the two calls');
+                assert.deepStrictEqual(persistedWarmT7.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries, [archiveEntryT7],
+                    'the archive survives a SECOND real service-path refresh unchanged too');
+
+                if (warmMsT7 > 5000) {
+                    console.warn(`Task 7 service refresh: warm pass took ${warmMsT7}ms — investigate before merging (mtime gate may not be short-circuiting through the service path)`);
+                }
+            }
+
+            fsT7.unlinkSync(tmpCacheT7);
+            console.log(`Task 7 service refresh: all checks passed (cold ${coldMsT7}ms over ${claudeKeysT7.length} claude ids` +
+                (warmMsT7 >= 0 ? `, warm-claude-cache pass ${warmMsT7}ms)` : ')'));
+        }
     })();
 }
 

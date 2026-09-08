@@ -710,57 +710,7 @@ if (require.main === module && process.argv.includes('--self-check')) {
             }
         }
 
-        // ─── model labels: the vendor's name beats our placeholder ───
-        {
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const { getModelDisplayName } = require('./aggregator');
-
-            // Seeded enums render the vendor's label, not "Placeholder M187".
-            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M187'), 'Gemini 3.5 Flash (Low)',
-                'a seeded placeholder shows the real model name');
-            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M298'), 'Gemini 3.7 Flash (High)',
-                'seed covers the 3.7 family');
-
-            // An enum nobody has ever seen must stay visibly unknown, never guessed.
-            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M9999'), 'Placeholder M9999',
-                'an unseen placeholder admits it is unknown');
-
-            // Learning at runtime names a model the seed never knew.
-            const learnedNow = learnModelLabels([
-                { label: 'Gemini 4.0 Pro (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M9999' } },
-                { label: 'no key', modelOrAlias: {} },
-                { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M8888' } },
-            ]);
-            assert.deepStrictEqual(learnedNow, { 'MODEL_PLACEHOLDER_M9999': 'Gemini 4.0 Pro (High)' },
-                'only complete pairs are learned, and only the new ones are returned for persisting');
-            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M9999'), 'Gemini 4.0 Pro (High)',
-                'a learned label takes effect immediately');
-
-            // Re-learning the same label reports nothing fresh, so we do not write state every poll.
-            assert.deepStrictEqual(
-                learnModelLabels([{ label: 'Gemini 4.0 Pro (High)', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M9999' } }]),
-                {}, 'an unchanged label is not re-persisted');
-
-            // A learned label must not override a mapping that drives pricing: M26 is
-            // date-aware (Opus 4.5 before the 4.6 cutoff) and must stay that way.
-            learnModelLabels([{ label: 'WRONG', modelOrAlias: { model: 'MODEL_PLACEHOLDER_M26' } }]);
-            assert.strictEqual(
-                getModelDisplayName('MODEL_PLACEHOLDER_M26', undefined, '2026-01-01T00:00:00.000Z'),
-                'Claude Opus 4.5 (Thinking)',
-                'labels never override a priced placeholder, so date-aware resolution survives');
-
-            // Persistence round-trip: what we hand the store restores what we knew.
-            const snapshot = allLearnedModelLabels();
-            assert.strictEqual(snapshot['MODEL_PLACEHOLDER_M9999'], 'Gemini 4.0 Pro (High)', 'snapshot carries learned labels');
-            setLearnedModelLabels({});
-            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M9999'), 'Placeholder M9999', 'cleared state forgets');
-            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M187'), 'Gemini 3.5 Flash (Low)', 'but the seed survives a clear');
-            setLearnedModelLabels(snapshot);
-            assert.strictEqual(getModelDisplayName('MODEL_PLACEHOLDER_M9999'), 'Gemini 4.0 Pro (High)', 'restore brings them back');
-            setLearnedModelLabels({});
-
-            console.log('model labels: all checks passed');
-        }
+        // model labels moved to test/unit/model-labels.test.js
 
         // ─── conversation guard: only warn when the comparison is meaningful ───
         {
@@ -2044,75 +1994,7 @@ if (require.main === module && process.argv.includes('--self-check')) {
             }
         }
 
-        // ─── provider partition ───
-        {
-            const { aggregateByProvider } = require('./aggregator');
-
-            const entry = (rid: string, ts: string, provider: string, model: string) => ({
-                responseId: rid, source: 'metadata', inp: 1, out: 10, cache: 100,
-                cacheWrite: 5, reasoning: 4, model, provider, ts,
-            });
-
-            const perConvo: any = {
-                'claude:sess-1': { entries: [entry('r1', '2026-08-01T10:00:00.000Z', 'anthropic', 'claude-opus-4-8')] },
-                'claude-code-imported': { entries: [entry('cc-1', '2026-06-01T12:00:00.000Z', 'anthropic', 'claude-opus-4-7')] },
-                '00b78c15-c64b-490f-8dec-7187d9e8c06a': {
-                    entries: [entry('g1', '2026-08-01T11:00:00.000Z', 'API_PROVIDER_GOOGLE_GEMINI', 'MODEL_PLACEHOLDER_M20')] },
-            };
-
-            const split = aggregateByProvider(perConvo, new Map(), '');
-
-            assert.strictEqual(split.claude.totalCalls, 2,
-                'the claude: session and the legacy archive both count as Claude');
-            assert.strictEqual(split.antigravity.totalCalls, 1, 'the bare uuid is Antigravity');
-
-            const per = 1 + 10 + 100 + 5 + 4;
-            assert.strictEqual(split.claude.totalTokens, per * 2);
-            assert.strictEqual(split.antigravity.totalTokens, per);
-
-            // Nothing was lost or double-counted in the partition: the two sides must
-            // account for every entry exactly once.
-            assert.strictEqual(
-                split.claude.totalCalls + split.antigravity.totalCalls, 3,
-                'partition is exhaustive and disjoint');
-
-            // An empty side must be a valid zeroed stats object, not a crash or null.
-            const onlyClaude = aggregateByProvider(
-                { 'claude:x': perConvo['claude:sess-1'] } as any, new Map(), '');
-            assert.strictEqual(onlyClaude.antigravity.totalCalls, 0);
-            assert.strictEqual(onlyClaude.antigravity.totalTokens, 0);
-            assert.ok(Array.isArray(onlyClaude.antigravity.daily), 'zeroed side still has bucket arrays');
-
-            // Documented assumption: responseId spaces are disjoint across providers
-            // (cc-<model>-<date> / req_* for Claude vs opaque base64 like
-            // -0BearmYFcPGjuMPq9bZsQk for Antigravity). aggregateFromPerConvo dedupes
-            // responseId GLOBALLY within one call via its internal seenGlobally set,
-            // so a combined aggregation would count a cross-provider duplicate once —
-            // but aggregateByProvider aggregates each side with its own separate call,
-            // so the same responseId appearing on both sides is counted on BOTH sides.
-            // This is the documented, accepted behaviour (see aggregateByProvider's
-            // doc comment), not a bug: a duplicate responseId across providers would
-            // itself be a data bug (the id spaces are structurally disjoint), and
-            // counting it twice surfaces that bug instead of silently hiding it via a
-            // cross-call global dedupe. This assertion PINS that behaviour so nobody
-            // "fixes" it into a silent cross-provider dedupe later without noticing.
-            const dupPerConvo: any = {
-                'claude:dup-sess': { entries: [entry('shared-rid', '2026-08-02T10:00:00.000Z', 'anthropic', 'claude-opus-4-8')] },
-                '11111111-2222-3333-4444-555555555555': {
-                    entries: [entry('shared-rid', '2026-08-02T10:05:00.000Z', 'API_PROVIDER_GOOGLE_GEMINI', 'MODEL_PLACEHOLDER_M20')] },
-            };
-            const dupSplit = aggregateByProvider(dupPerConvo, new Map(), '');
-            assert.strictEqual(dupSplit.claude.totalCalls, 1,
-                'PINNED (not a bug): a responseId shared across providers is counted on the Claude side too — ' +
-                'aggregateByProvider dedupes per-side, not globally, because provider id spaces are documented ' +
-                'as disjoint; do not "fix" this into a cross-provider global dedupe');
-            assert.strictEqual(dupSplit.antigravity.totalCalls, 1,
-                'PINNED (not a bug): the same shared responseId is ALSO counted on the Antigravity side — a ' +
-                'combined aggregateFromPerConvo call would count it once via seenGlobally, but the partitioned ' +
-                'wrapper counts it twice by design (see aggregateByProvider doc comment)');
-
-            console.log('provider partition: all checks passed');
-        }
+        // provider partition moved to test/unit/provider-partition.test.js
 
         // ─── account facet and honesty markers ───
         {

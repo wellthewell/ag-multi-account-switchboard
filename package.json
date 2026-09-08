@@ -1,7 +1,7 @@
 {
   "name": "ag-multi-account-switchboard",
   "displayName": "AG Multi-Account Switchboard",
-  "description": "Switch between Antigravity accounts instantly. Monitor AI quotas, token budgets and reset timers — all in one sidebar panel.",
+  "description": "Switch between Antigravity accounts instantly. Monitor AI quotas, token budgets and reset timers \u2014 all in one sidebar panel.",
   "icon": "assets/icon.png",
   "version": "3.3.4",
   "publisher": "wellthewell",
@@ -165,6 +165,7 @@
     "compile": "npm run compile:extension && npm run compile:webview",
     "compile:extension": "tsc -p ./tsconfig.extension.json",
     "compile:webview": "node esbuild.webview.mjs",
+    "test": "npm run compile:extension && node --test test/unit/*.test.js",
     "watch": "tsc -watch -p ./tsconfig.extension.json",
     "watch:webview": "node esbuild.webview.mjs --watch",
     "package": "npm run compile:extension && node esbuild.webview.mjs --production && vsce package",

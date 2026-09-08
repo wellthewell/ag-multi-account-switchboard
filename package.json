@@ -165,7 +165,7 @@
     "compile": "npm run compile:extension && npm run compile:webview",
     "compile:extension": "tsc -p ./tsconfig.extension.json",
     "compile:webview": "node esbuild.webview.mjs",
-    "test": "npm run compile:extension && node --test test/unit/*.test.js",
+    "test": "npm run compile:extension && AG_LOG_SILENT=1 node --test test/unit/*.test.js",
     "watch": "tsc -watch -p ./tsconfig.extension.json",
     "watch:webview": "node esbuild.webview.mjs --watch",
     "package": "npm run compile:extension && node esbuild.webview.mjs --production && vsce package",

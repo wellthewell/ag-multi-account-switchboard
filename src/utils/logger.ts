@@ -18,6 +18,7 @@ export enum LogLevel {
     INFO = 1,
     WARN = 2,
     ERROR = 3,
+    SILENT = 4, // emits nothing, DIAG included — see minLevel below
 }
 
 const LEVEL_LABELS: Record<LogLevel, string> = {
@@ -26,10 +27,18 @@ const LEVEL_LABELS: Record<LogLevel, string> = {
     [LogLevel.INFO]: 'INFO',
     [LogLevel.WARN]: 'WARN',
     [LogLevel.ERROR]: 'ERROR',
+    [LogLevel.SILENT]: 'SILENT',
 };
 
 let outputChannel: vscode.OutputChannel | null = null;
-let minLevel: LogLevel = LogLevel.DEBUG;
+
+/**
+ * `AG_LOG_SILENT=1` suppresses every line, DIAG included. Set by `npm test`:
+ * with no OutputChannel outside the extension host, `write` falls through to
+ * `console`, and the production logger drowns test results in its own output.
+ * An explicit `initLogger` call still overrides this.
+ */
+let minLevel: LogLevel = process.env.AG_LOG_SILENT === '1' ? LogLevel.SILENT : LogLevel.DEBUG;
 
 /** Physical file path — when set, every log line is also appended here. */
 let fileSinkPath: string | null = null;
@@ -86,6 +95,10 @@ export function setDiagSink(path: string | null): void {
  */
 export function createLogger(module: string) {
     const write = (level: LogLevel, msg: string, ...args: unknown[]) => {
+        // DIAG deliberately bypasses the severity gate below (it is gated by
+        // isDiagEnabled instead), so SILENT has to be checked separately or it
+        // would leak diagnostic lines.
+        if (minLevel === LogLevel.SILENT) return;
         if (level !== LogLevel.DIAG && level < minLevel) return;
 
         const timestamp = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm

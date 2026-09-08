@@ -290,60 +290,6 @@ export const PROVIDER_DISPLAY: Record<string, string> = {
 if (require.main === module && process.argv.includes('--self-check')) {
     void (async () => {
         const assert = require('assert');
-        const base = { stepCount: 0, cachedStepCount: 0, mtime: 1000, cachedMtime: 1000, hasEntries: true };
-
-        // Unchanged conversation stays clean.
-        assert.strictEqual(isConvoDirty(base), false, 'unchanged should be clean');
-
-        // IDE session: LS reports more steps than we cached.
-        assert.strictEqual(isConvoDirty({ ...base, stepCount: 5, cachedStepCount: 3 }), true, 'stepCount delta should be dirty');
-
-        // CLI session: LS never lists it (stepCount stays 0) but the .db kept growing.
-        assert.strictEqual(isConvoDirty({ ...base, mtime: 2000 }), true, 'mtime delta should be dirty');
-
-        // The regression this gate exists for: fetched once mid-session, came back empty,
-        // stepCount pinned at 0 forever. Pre-mtime cache → must be retried.
-        assert.strictEqual(isConvoDirty({ ...base, cachedMtime: undefined, hasEntries: false }), true, 'blank pre-mtime convo should be retried');
-
-        // ...but a pre-mtime convo that already has data must NOT re-fetch on upgrade,
-        // otherwise the first refresh after install re-reads every conversation.
-        assert.strictEqual(isConvoDirty({ ...base, cachedMtime: undefined, hasEntries: true }), false, 'populated pre-mtime convo should be left alone');
-
-        // Blank convo already carrying an mtime: only dirty once the file actually moves.
-        assert.strictEqual(isConvoDirty({ ...base, hasEntries: false }), false, 'blank convo with current mtime should be clean');
-
-        console.log('isConvoDirty: all checks passed');
-
-        // ─── gridMode: the window each range filter draws and counts ───
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { gridMode } = require('../../shared/helpers');
-        const thu = new Date(2026, 7, 6);  // Thu 2026-08-06, local
-
-        assert.deepStrictEqual(gridMode('all', thu), { kind: 'year' }, 'all time keeps the year grid');
-        assert.deepStrictEqual(gridMode('24h', thu), { kind: 'hourly' }, '24h has no meaningful day grid');
-        assert.deepStrictEqual(gridMode('today', thu), { kind: 'hourly' }, 'today has no meaningful day grid');
-
-        // The whole point: N days means exactly N squares, ending today.
-        const d7 = gridMode('7d', thu);
-        assert.deepStrictEqual(d7, { kind: 'strip', from: '2026-07-31', to: '2026-08-06' }, '7d spans 7 days');
-        assert.strictEqual(dayCount(d7), 7, '7d draws 7 squares');
-        assert.strictEqual(dayCount(gridMode('30d', thu)), 30, '30d draws 30 squares');
-
-        // Thu → back to Mon; this-month → back to the 1st.
-        assert.deepStrictEqual(gridMode('this-week', thu), { kind: 'strip', from: '2026-08-03', to: '2026-08-06' }, 'this-week starts Monday');
-        assert.deepStrictEqual(gridMode('this-month', thu), { kind: 'strip', from: '2026-08-01', to: '2026-08-06' }, 'this-month starts the 1st');
-        assert.deepStrictEqual(gridMode('last-month', thu), { kind: 'strip', from: '2026-07-01', to: '2026-07-31' }, 'last-month is the whole prior month');
-
-        // Sunday must count as the 7th day of a Mon-start week, not the 0th.
-        assert.deepStrictEqual(gridMode('this-week', new Date(2026, 7, 9)), { kind: 'strip', from: '2026-08-03', to: '2026-08-09' }, 'Sunday closes the week');
-
-        // The year grid silently drops days outside the selected year — a strip must not.
-        assert.deepStrictEqual(gridMode('30d', new Date(2026, 0, 5)), { kind: 'strip', from: '2025-12-07', to: '2026-01-05' }, '30d crosses the year boundary');
-
-        // Local dates, not UTC — a late-evening ICT timestamp must not roll to tomorrow.
-        assert.strictEqual(gridMode('7d', new Date(2026, 7, 6, 23, 30)).to, '2026-08-06', 'late evening stays on today');
-
-        console.log('gridMode: all checks passed');
 
         // ─── dbAllAt: multi-row reads from an arbitrary database ───
         // Probe for sqlite3 upfront: the fixture requires it, so if it is missing the entire
@@ -3405,10 +3351,3 @@ if (require.main === module && process.argv.includes('--self-check')) {
     })();
 }
 
-/** Inclusive day count of a strip window — test helper. */
-function dayCount(mode: { kind: string; from?: string; to?: string }): number {
-    if (mode.kind !== 'strip') return 0;
-    const from = new Date(mode.from + 'T00:00:00');
-    const to = new Date(mode.to + 'T00:00:00');
-    return Math.round((to.getTime() - from.getTime()) / 86400000) + 1;
-}

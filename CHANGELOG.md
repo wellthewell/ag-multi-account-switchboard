@@ -2,7 +2,7 @@
 
 All notable changes to **AG Multi-Account Switchboard** are documented here.
 
-## [Unreleased]
+## [3.4.0] - 2026-09-08
 
 ### Added
 - **Claude Code usage is tracked alongside Antigravity.** Claude Code's own session transcripts are read from disk (usage figures only — never conversation content) and folded into the same usage ledger, so the panel shows both tools side by side, each with its own totals and, for Claude, a per-account breakdown. There is deliberately no combined headline: on real data one provider dominates the sum and a single number would describe neither tool.

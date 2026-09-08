@@ -510,59 +510,9 @@ if (require.main === module && process.argv.includes('--self-check')) {
         const { aggregateFromPerConvo } = require('./aggregator');
         const mk = (rid: string, ts: string) => ({ responseId: rid, source: 'metadata', inp: 100, out: 10, cache: 0, cacheWrite: 0, reasoning: 0, model: 'MODEL_PLACEHOLDER_M73', provider: 'API_PROVIDER_GOOGLE_GEMINI', ts });
 
-        // ─── health card: three verification states, not two ───
-        // Task 9's review: rendering "compared:0" as clean manufactures exactly
-        // the false confidence the verifier exists to prevent. A stub that
-        // always prints "clean" regardless of what was actually compared must
-        // fail this, and so must one that never mentions the source/skip counts.
+        // health card moved to test/unit/health-card.test.js. The renderHealthCard
+        // require stays: the disk round-trip section below uses it.
         const { renderHealthCard } = require('../../shared/usage-components');
-        const baseHealth = { source: 'store', conversations: 100, unreadable: 0, unknownModels: [], skippedRows: 0, verification: null, countingChangedAt: null };
-
-        assert.ok(renderHealthCard(baseHealth).includes('conversation store'), 'the card names the data source');
-        assert.ok(renderHealthCard(baseHealth).includes('100'), 'the card shows how many conversations were read');
-
-        // State 1: the verifier has not run at all this session.
-        const cardNeverRun = renderHealthCard(baseHealth);
-        // Row label is "Token counts", not "Cross-check" (see item C, final review):
-        // the verifier checks token counts against the language server, not dollar
-        // rates, and the old label sat directly under an estimated-cost figure
-        // where it could be misread as vouching for the money.
-        assert.ok(!/Token counts/i.test(cardNeverRun), 'verification:null renders no cross-check row at all');
-        assert.ok(!/clean/i.test(cardNeverRun), 'verification:null must never be rendered as clean');
-
-        // State 2: it ran, but every sampled conversation was one the language
-        // server could no longer serve — compared nothing. This is the NORMAL
-        // condition this whole plan exists to work around, not a clean result.
-        const cardCompared0 = renderHealthCard({ ...baseHealth, verification: { compared: 0, diverged: 0, at: '2026-08-14T00:00:00.000Z' } });
-        assert.ok(/not verified this run/i.test(cardCompared0), 'compared:0 says it was not verified this run');
-        assert.ok(!/clean/i.test(cardCompared0), 'compared:0 must never be rendered as clean — that is the exact false confidence this exists to prevent');
-
-        // State 3: a real, agreeing comparison — the only state allowed to say clean.
-        const cardClean = renderHealthCard({ ...baseHealth, verification: { compared: 42, diverged: 0, at: '2026-08-14T00:00:00.000Z' } });
-        assert.ok(/clean/i.test(cardClean), 'a real, agreeing comparison is reported as clean');
-        assert.ok(cardClean.includes('42'), 'the clean state names how many calls were actually compared');
-
-        // A real comparison that disagreed must still warn, never read as clean.
-        const cardDiverged = renderHealthCard({ ...baseHealth, verification: { compared: 42, diverged: 3, at: '2026-08-14T00:00:00.000Z' } });
-        assert.ok(!/clean/i.test(cardDiverged), 'a divergent comparison must not say clean');
-        assert.ok(cardDiverged.includes('3'), 'the divergence count is shown');
-
-        // Skipped-rows counter: a decode regression has somewhere to become visible.
-        // Review Important 3: the count only covers gen_metadata, not steps — the
-        // card's own text must say so, not just the source comment, or a reader
-        // relying on it as a trust signal has no way to know its scope.
-        const cardSkipped = renderHealthCard({ ...baseHealth, skippedRows: 7 });
-        assert.ok(cardSkipped.includes('7'), 'skipped rows are surfaced as a plain count');
-        assert.ok(/metadata/i.test(cardSkipped), 'the label names its scope (metadata rows) — a reader must not mistake this for a total across all read paths');
-        const cardNoSkips = renderHealthCard({ ...baseHealth, skippedRows: 0 });
-        assert.ok(!/skipped/i.test(cardNoSkips), 'a healthy zero skip count adds no noise to the card');
-
-        // Changeover marker: named once it exists, silent when it does not.
-        const cardWithChangeover = renderHealthCard({ ...baseHealth, countingChangedAt: '2026-08-10T00:00:00.000Z' });
-        assert.ok(/Aug\s*10/.test(cardWithChangeover), 'the changeover note names the date counting changed');
-        assert.ok(!/Aug\s*10/.test(cardNeverRun), 'no changeover note when countingChangedAt is null');
-
-        console.log('health card: all checks passed');
 
         // ─── health persists through an actual disk write + read round-trip ───
         // Review Important 1: cache.write() was being called BEFORE stats.health
@@ -750,31 +700,7 @@ if (require.main === module && process.argv.includes('--self-check')) {
             console.log(`conversation guard: all checks passed${sharedHere ? ' (shared-store case exercised on this machine)' : ' (no shared store here — that branch not exercised)'}`);
         }
 
-        // ─── poll rates: the footer cannot offer what the host would reject ───
-        {
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const { POLL_INTERVALS_MS, DEFAULT_POLL_INTERVAL_MS, pollIntervalLabel } = require('../../shared/uiConstants');
-
-            assert.ok(POLL_INTERVALS_MS.includes(DEFAULT_POLL_INTERVAL_MS),
-                'the default rate must be one the picker offers, or the footer highlights nothing on first open');
-
-            assert.deepStrictEqual(POLL_INTERVALS_MS.map(pollIntervalLabel), ['30s', '1m', '2m', '5m'],
-                'labels read as the user expects');
-
-            // The drift this guards: the buttons are generated from POLL_INTERVALS_MS
-            // and the host validates against the same array, so a rate added to the UI
-            // is automatically accepted. Assert they are literally the same source —
-            // reintroducing a second hardcoded list is the regression.
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const tpl = require('fs').readFileSync(
-                require('path').join(__dirname, '../../../src/templates/webviewTemplate.ts'), 'utf8');
-            assert.ok(tpl.includes('POLL_INTERVALS_MS.map'),
-                'the footer buttons must be generated from POLL_INTERVALS_MS, not hardcoded');
-            assert.ok(!/data-ms="\d/.test(tpl),
-                'no literal data-ms value may remain in the template');
-
-            console.log('poll rates: all checks passed');
-        }
+        // poll rates moved to test/unit/poll-rates.test.js
 
         // ─── v2 → v3 migration preserves the Claude archive ───
         {

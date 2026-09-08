@@ -345,10 +345,10 @@ if (require.main === module && process.argv.includes('--self-check')) {
         }
 
 
-        // ─── usageReader: decode one gen_metadata blob ───
+        // The blob DECODE assertions and the steps merge moved to
+        // test/unit/usage-reader.test.js. The fixture itself stays: the
+        // sqlite-backed readGenMetadata section below embeds it as a row.
         const { encodeVarintField, encodeMessage, encodeString } = require('../../shared/protobuf');
-        const { decodeGenMetadataBlob } = require('./store/usageReader');
-
         const usage = Buffer.concat([
             encodeVarintField(1, 1073),      // model enum -> MODEL_PLACEHOLDER_M73
             encodeVarintField(2, 15027),     // input
@@ -357,37 +357,10 @@ if (require.main === module && process.argv.includes('--self-check')) {
             encodeVarintField(6, 24),        // provider -> Gemini
             encodeVarintField(9, 401),       // reasoning
             encodeVarintField(10, 44),       // responseOutputTokens — divergent on purpose
-            encodeString(11, 'eXZkatT5D8ONjuMPy9KhkA0'),  // responseId
+            encodeString(11, 'eXZkatT5D8ONjuMPy9KhkA0'),
         ]);
         const stamp = encodeMessage(9, encodeMessage(4, encodeVarintField(1, 1784968824)));
         const blob = encodeMessage(1, Buffer.concat([encodeMessage(4, usage), stamp]));
-
-        const entry = decodeGenMetadataBlob(blob);
-        assert.strictEqual(entry.inp, 15027, 'input tokens');
-        assert.strictEqual(entry.out, 126, 'output comes from field 3, never field 10 — field 10 is unverified and has been seen disagreeing');
-        assert.strictEqual(entry.cache, 12232, 'cache read tokens');
-        assert.strictEqual(entry.reasoning, 401, 'reasoning tokens — priced, on 72% of entries');
-        assert.strictEqual(entry.model, 'MODEL_PLACEHOLDER_M73', 'model resolved from enum');
-        assert.strictEqual(entry.provider, 'API_PROVIDER_GOOGLE_GEMINI', 'provider resolved from enum');
-        assert.strictEqual(entry.responseId, 'eXZkatT5D8ONjuMPy9KhkA0', 'response id');
-        assert.strictEqual(entry.source, 'metadata', 'source tag');
-        assert.strictEqual(entry.ts, new Date(1784968824000).toISOString(), 'timestamp from unix seconds');
-        assert.strictEqual(decodeGenMetadataBlob(Buffer.from([0x00])), null, 'a malformed blob yields null, never a zero entry');
-        console.log('usageReader: all checks passed');
-
-        // ─── steps merge: metadata wins, steps fills gaps ───
-        const { mergeSources } = require('./store/usageReader');
-        const fromMeta = { responseId: 'A', source: 'metadata', inp: 10, out: 1, cache: 0, cacheWrite: 0, reasoning: 0, model: 'M', provider: 'P', ts: '2026-08-01T00:00:00.000Z' };
-        const fromStepsSame = { responseId: 'A', source: 'steps', inp: 99, out: 9, cache: 0, cacheWrite: 0, reasoning: 0, model: 'M', provider: 'P', ts: '2026-08-01T00:00:00.000Z' };
-        const fromStepsOnly = { responseId: 'B', source: 'steps', inp: 5, out: 1, cache: 0, cacheWrite: 0, reasoning: 0, model: 'M', provider: 'P', ts: '2026-08-01T00:00:00.000Z' };
-        // Annotated explicitly: mergeSources comes through require(), which types as
-        // any regardless of the target module's real signature, so .find()'s callback
-        // below would get no contextual parameter type without this.
-        const merged: TokenEntry[] = mergeSources([fromMeta], [fromStepsSame, fromStepsOnly]);
-        assert.strictEqual(merged.length, 2, 'the duplicate collapses, the steps-only entry survives');
-        assert.strictEqual(merged.find(e => e.responseId === 'A')!.inp, 10, 'metadata wins for a shared response id');
-        assert.ok(merged.find(e => e.responseId === 'B'), 'steps-only entries are kept — 3.3% of history depends on this');
-        console.log('usageReader steps merge: all checks passed');
 
         // ─── readStepsUsage: end-to-end against a fixture database ───
         // The merge assertions above use hand-built arrays and never call readStepsUsage

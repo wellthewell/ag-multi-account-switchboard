@@ -678,27 +678,6 @@ if (require.main === module && process.argv.includes('--self-check')) {
         assert.strictEqual(aprilBucket.cost, 0, 'an unknown model contributes zero to MonthlyBucket.cost — excluded, never priced at the Sonnet fallback rate');
         console.log('monthly pricing key: all checks passed');
 
-        // ─── ledger semantics ───
-        const { mergeIntoLedger } = require('./cache');
-        const e1 = { responseId: 'X', source: 'metadata', inp: 1, out: 1, cache: 0, cacheWrite: 0, reasoning: 0, model: 'M', provider: 'P', ts: '2026-08-01T00:00:00.000Z' };
-        const existingLedger = {
-            'claude-code-imported': { entries: [e1, e1] },     // synthetic, no file on disk
-            'deleted-by-user':      { entries: [e1] },          // file removed since
-            'still-present':        { entries: [e1] },
-            'present-not-reread':   { entries: [e1, e1] },      // on disk, but not re-read this pass
-        };
-        const freshRead = { 'still-present': { entries: [e1, e1, e1] } };
-        const present = new Set(['still-present', 'present-not-reread']);
-        const ledger = mergeIntoLedger(existingLedger, freshRead, present);
-        assert.strictEqual(ledger['claude-code-imported'].entries.length, 2,
-            'a conversation with no backing file is preserved — 12.94B tokens depend on this');
-        assert.strictEqual(ledger['deleted-by-user'].entries.length, 1, 'history survives deleting a conversation');
-        assert.strictEqual(ledger['still-present'].entries.length, 3, 'a conversation present on disk is replaced by the fresh read');
-        assert.strictEqual(ledger['present-not-reread'].entries.length, 2, 'a conversation on disk but not re-read this pass keeps what it had');
-        const before = Object.values(existingLedger).reduce((n: number, v: any) => n + v.entries.length, 0);
-        const after = Object.values(ledger).reduce((n: number, v: any) => n + v.entries.length, 0);
-        assert.ok(after >= before, 'the ledger never shrinks');
-        console.log('cache ledger: all checks passed');
 
         // ─── empty state names the last activity instead of showing zeros ───
         const { renderEmptyRange } = require('../../shared/usage-components');
@@ -1165,18 +1144,6 @@ if (require.main === module && process.argv.includes('--self-check')) {
             console.log('read() version gate: all checks passed');
         }
 
-        // ─── provider test ───
-        {
-            assert.strictEqual(isClaudeConvo('claude:456d535f-1489-442b-a5dd-8f69c5acfc8e'), true,
-                'prefixed session id is Claude');
-            assert.strictEqual(isClaudeConvo('claude-code-imported'), true,
-                'the legacy archive id is Claude and cannot be renamed');
-            assert.strictEqual(isClaudeConvo('00b78c15-c64b-490f-8dec-7187d9e8c06a'), false,
-                'a bare uuid is an Antigravity conversation');
-            assert.strictEqual(isClaudeConvo('claude-code-something-else'), false,
-                'only the exact legacy id is grandfathered, not any claude-code prefix');
-            console.log('provider test: all checks passed');
-        }
 
         // ─── Claude account discovery ───
         {

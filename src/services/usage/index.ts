@@ -547,9 +547,21 @@ export class UsageStatsService {
      * Returns whether anything new was actually persisted, so callers can
      * fold it into their own onBackfillComplete decision.
      */
+    /**
+     * Transcript roots to ingest from. `undefined` means "discover them", which
+     * is what production always does. A test subclass overrides it to point at
+     * a fixture directory — driving this against the real ~/.claude corpus is
+     * inherently flaky, because a Claude session running while the test runs
+     * appends to a transcript mid-assertion and the mtime gate then honestly
+     * reports a second persist.
+     */
+    protected claudeRoots(): string[] | undefined {
+        return undefined;
+    }
+
     private async refreshClaudeUsage(): Promise<boolean> {
         try {
-            const claude = await ingestClaudeUsage({ mtimes: this.claudeMtimes });
+            const claude = await ingestClaudeUsage({ mtimes: this.claudeMtimes, roots: this.claudeRoots() });
 
             if (Object.keys(claude.perConvo).length === 0) {
                 // Every discovered file's mtime already matched what we knew —

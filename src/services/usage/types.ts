@@ -1352,17 +1352,47 @@ if (require.main === module && process.argv.includes('--self-check')) {
             const seededStatsA = aggregateFromPerConvo(seededPerConvoA as any, new Map());
             testCacheA.write(seededPerConvoA, [LEGACY_CLAUDE_ARCHIVE_ID], seededStatsA, new Map(), undefined, undefined, {}, undefined);
 
-            const svcA = new UsageStatsServiceA();
+            // A FIXTURE corpus, not the live one. Driving refreshClaudeUsage
+            // against real ~/.claude transcripts made the warm assertion below
+            // flaky at roughly one run in three: a Claude session running while
+            // the self-check runs appends to a transcript mid-test, the mtime
+            // gate then honestly reports a second persist, and the assertion
+            // fails on a correct implementation. Two files, one of them a nested
+            // subagent transcript, so the cold call has both id shapes to find.
+            const rootA = fsA.mkdtempSync(pathA.join(osA.tmpdir(), 'ag-claude-fixture-'));
+            const slugA = pathA.join(rootA, 'projects', '-Users-someone-proj');
+            fsA.mkdirSync(pathA.join(slugA, 'sess-fixture-1', 'subagents'), { recursive: true });
+            const turnA = (rid: string, ts: string) => JSON.stringify({
+                type: 'assistant', requestId: rid, timestamp: ts,
+                message: {
+                    model: 'claude-opus-4-8',
+                    usage: {
+                        input_tokens: 100, output_tokens: 1000,
+                        cache_read_input_tokens: 50000, cache_creation_input_tokens: 2000,
+                        output_tokens_details: { thinking_tokens: 400 },
+                    },
+                    content: [{ type: 'text', text: 'hi' }],
+                },
+            });
+            fsA.writeFileSync(pathA.join(slugA, 'sess-fixture-1.jsonl'),
+                turnA('req-f1', '2026-08-01T10:00:00.000Z') + '\n');
+            fsA.writeFileSync(pathA.join(slugA, 'sess-fixture-1', 'subagents', 'agent-deadbeefdeadbeef1.jsonl'),
+                turnA('req-f2', '2026-08-01T10:05:00.000Z') + '\n');
+
+            class TestServiceA extends UsageStatsServiceA {
+                claudeRoots() { return [rootA]; }
+            }
+            const svcA = new TestServiceA();
             svcA.cache = testCacheA;
             assert.strictEqual(Object.keys(svcA.claudeMtimes).length, 0,
                 'sanity: a fresh service instance starts with no known Claude mtimes, so the call below is a genuine cold ingest');
 
-            // ─── cold call: real Claude corpus on this machine, nothing known yet ───
+            // ─── cold call: the fixture corpus, nothing known yet ───
             const tColdA = Date.now();
             const coldPersistedA = await svcA.refreshClaudeUsage();
             const coldMsA = Date.now() - tColdA;
             assert.strictEqual(coldPersistedA, true,
-                'refreshClaudeUsage: a cold call with real Claude data to ingest reports true (persisted)');
+                'refreshClaudeUsage: a cold call with Claude data to ingest reports true (persisted)');
 
             const afterColdA = testCacheA.read();
             assert.ok(afterColdA, 'the cache persisted after the cold call');
@@ -1411,7 +1441,11 @@ if (require.main === module && process.argv.includes('--self-check')) {
             assert.deepStrictEqual(afterWarmA.perConvo[LEGACY_CLAUDE_ARCHIVE_ID].entries, [archiveEntryA],
                 'refreshClaudeUsage: the archive survives a SECOND call unchanged too — guarantee 2 (archive survival)');
 
+            assert.strictEqual(claudeKeysHoistA.length, 2,
+                'the fixture is fully ingested: one top-level transcript and one nested subagent transcript');
+
             fsA.unlinkSync(tmpCacheA);
+            fsA.rmSync(rootA, { recursive: true, force: true });
             console.log(`refreshClaudeUsage direct: all checks passed (cold ${coldMsA}ms over ${claudeKeysHoistA.length} claude ids, warm ${warmMsA}ms)`);
         }
 

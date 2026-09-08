@@ -3012,6 +3012,396 @@ if (require.main === module && process.argv.includes('--self-check')) {
                 console.log(`health conversation count: all checks passed (${conversationsI4.length} antigravity, ${claudeIdsI4.length} claude ids ignored)`);
             }
         }
+
+        // ═══ V1–V5: the three on-disk cases are THREE, not two ═══
+        //
+        // The refusal introduced in ba2ea92 made write-refusal a property of
+        // StatsCache — correct, and not weakened here. But it classified a v1
+        // (or version-absent) file as 'unreadable' along with genuinely
+        // undecodable ones, so for a user holding a v1 file every write was
+        // refused FOREVER: read() returned null every pass, loadSync never
+        // returned stats, and the whole Claude-tracking feature was silently
+        // off, recoverable only by finding an output-channel warning and
+        // hand-deleting a dotfile.
+        //
+        // The three states are structurally distinct:
+        //
+        //   truncated / invalid JSON / missing top-level field
+        //     → contents UNKNOWN, could hold the archive        → refuse all writes
+        //   schemaVersion ABOVE CACHE_SCHEMA_VERSION
+        //     → written by a NEWER build, clobbering loses data → refuse all writes
+        //   schemaVersion BELOW it with no migration (v1/absent)
+        //     → known, superseded, provably archive-free        → preserve, then rebuild
+        //
+        // "Provably" is a historical fact, not a judgement: schemaVersion did
+        // not exist before 9da46be (2026-05-04), which introduced it as `2`
+        // together with the reasoning/cacheWrite metrics, and the archive was
+        // hand-imported in August 2026 into a file that was already v2. A
+        // v1-format file holding claude-code-imported is impossible.
+        //
+        // Every fixture below is a temp file behind a filePath-overriding
+        // subclass. Nothing in this block ever touches the real
+        // ~/.gemini/antigravity/brain/.deep_stats_cache.json.
+        {
+            const fsV = require('fs'); const pathV = require('path'); const osV = require('os');
+            const { StatsCache: StatsCacheV } = require('./cache');
+
+            const dirV = fsV.mkdtempSync(pathV.join(osV.tmpdir(), `ag-switchboard-selfcheck-schema-${Date.now()}-`));
+
+            // Un-regenerable-looking archive content, so "byte-identical" below
+            // is a statement about the archive and not about an empty file.
+            const archiveEntryV = {
+                ts: '2026-03-03T00:00:00.000Z', model: 'archived', provider: 'claude',
+                responseId: 'cc-archive-v', source: 'metadata',
+                inp: 12345678, out: 87654321, cache: 0, cacheWrite: 0, reasoning: 0,
+            };
+            const fixtureV = (schemaVersion: number | null) => JSON.stringify({
+                ...(schemaVersion === null ? {} : { schemaVersion }),
+                perConvo: { [LEGACY_CLAUDE_ARCHIVE_ID]: { entries: [archiveEntryV] } },
+                fetchedIds: [LEGACY_CLAUDE_ARCHIVE_ID],
+                stats: { totalCalls: 1 },
+                updatedAt: '2026-09-06T00:00:00.000Z',
+            });
+
+            const seedV = (name: string, content: string) => {
+                const p = pathV.join(dirV, `${name}.json`);
+                fsV.writeFileSync(p, content, 'utf-8');
+                return p;
+            };
+            const cacheAtV = (p: string) => {
+                class C extends StatsCacheV { get filePath() { return p; } }
+                return new C();
+            };
+            const copiesOfV = (p: string): string[] => {
+                const stem = pathV.basename(p).replace(/\.json$/, '') + '.rejected-';
+                return fsV.readdirSync(pathV.dirname(p))
+                    .filter((f: string) => f.startsWith(stem))
+                    .map((f: string) => pathV.join(pathV.dirname(p), f));
+            };
+            const rebuiltV: any = { 'some-antigravity-convo': { entries: [
+                { ts: '2026-09-01T00:00:00.000Z', model: 'm', provider: 'x', responseId: 'r-rebuild-v', source: 'metadata', inp: 1, out: 1, cache: 0, cacheWrite: 0, reasoning: 0 },
+            ] } };
+            const writeRebuiltV = (c: any): boolean => {
+                const original = console.warn;
+                console.warn = () => { /* expected: the refusal / preservation WARNs under test */ };
+                try { return c.write(rebuiltV, ['some-antigravity-convo'], aggregateFromPerConvo(rebuiltV, new Map()), new Map()); }
+                finally { console.warn = original; }
+            };
+
+            // ─── V1: a v1 file is 'stale' and REBUILDS. The regression assertion. ───
+            // Fails on pre-fix code at the very first assertion: probe() said
+            // 'unreadable', write() refused, and the file stayed v1 forever.
+            {
+                const p = seedV('v1', fixtureV(1));
+                const c = cacheAtV(p);
+
+                assert.strictEqual(c.probe(), 'stale',
+                    'V1: a v1 file probes STALE — a known, superseded, provably archive-free schema, NOT the ' +
+                    '"contents unknown" state that must refuse writes. Pre-fix this was \'unreadable\', which ' +
+                    'refused every write forever and switched Claude tracking off with no in-app recovery');
+
+                const original = console.warn;
+                console.warn = () => { /* expected: the preservation WARN */ };
+                let readBack;
+                try { readBack = c.read(); } finally { console.warn = original; }
+                assert.strictEqual(readBack, null,
+                    'V1: read() still returns null on a stale file, so the cold-boot path rebuilds — unchanged behaviour');
+
+                const afterRead = copiesOfV(p);
+                assert.strictEqual(afterRead.length, 1,
+                    'V1: read() preserved a copy BEFORE any write could touch the file — the copy is taken first, ' +
+                    'not raced by the rebuild');
+                assert.strictEqual(fsV.readFileSync(afterRead[0], 'utf-8'), fixtureV(1),
+                    'V1: the preserved copy is byte-identical to the v1 file it replaced');
+
+                assert.strictEqual(writeRebuiltV(c), true,
+                    'V1: write() SUCCEEDS on a stale file once the copy is safe. This is the regression: without it ' +
+                    'the v1 user gets read()===null, write()===refused, loadSync()===null and refreshClaudeUsage ' +
+                    'bailing, every pass, permanently');
+
+                const persisted = JSON.parse(fsV.readFileSync(p, 'utf-8'));
+                assert.strictEqual(persisted.schemaVersion, CACHE_SCHEMA_VERSION,
+                    'V1: the file on disk is now at the current schema version — the rebuild actually landed');
+                assert.ok(persisted.perConvo['some-antigravity-convo'],
+                    'V1: ...carrying the newly written content, not the superseded v1 payload');
+
+                // Idempotence: the file is 'ok' now, so nothing further can
+                // trigger a copy. A stale classification must not mean "copy on
+                // every write" — that is how 1.3 MB files accumulate.
+                assert.strictEqual(c.probe(), 'ok', 'V1: the rebuilt file probes ok, so the stale branch is not re-entered');
+                assert.strictEqual(writeRebuiltV(c), true, 'V1: subsequent writes are ordinary successes');
+                assert.strictEqual(copiesOfV(p).length, 1,
+                    'V1: still exactly ONE preserved copy after two further writes — the stale path copies once, ' +
+                    'not once per write');
+
+                for (const f of copiesOfV(p)) fsV.unlinkSync(f);
+                fsV.unlinkSync(p);
+            }
+
+            // ─── V2: a version-ABSENT file behaves identically to v1 ───
+            // Same known-superseded case (schemaVersion predates the field).
+            {
+                const p = seedV('vnone', fixtureV(null));
+                const c = cacheAtV(p);
+                assert.strictEqual(c.probe(), 'stale',
+                    'V2: a file with NO schemaVersion at all is the same known-superseded case as v1 — the field ' +
+                    'did not exist before 9da46be, so its absence dates the file, it does not make it unknown');
+                assert.strictEqual(writeRebuiltV(c), true, 'V2: ...and it rebuilds too');
+                for (const f of copiesOfV(p)) fsV.unlinkSync(f);
+                fsV.unlinkSync(p);
+            }
+
+            // ─── V3: a stale file whose preservation copy FAILS still refuses ───
+            //
+            // This is the exact condition the earlier implementer declined the
+            // fix over ("letting the rebuild proceed once a backup succeeded
+            // would restore the exact hole for the case where copyFileSync
+            // fails"). Gating on the copy SUCCEEDING is what closes it — so
+            // prove it holds.
+            //
+            // fs.copyFileSync is stubbed to throw rather than using an
+            // unwritable directory, deliberately: an unwritable directory
+            // would also break write()'s own writeFileSync, so the assertion
+            // would pass even with the gate removed. Here the directory is
+            // fully writable and the write WOULD have succeeded — the refusal
+            // can only come from the gate. Remove `&& !this.preserveRejected()`
+            // from write() and this section fails.
+            {
+                const p = seedV('v1-copyfail', fixtureV(1));
+                const c = cacheAtV(p);
+                assert.strictEqual(c.probe(), 'stale', 'sanity: the fixture is the stale case');
+
+                const realCopy = fsV.copyFileSync;
+                const originalWarn = console.warn;
+                let wrote;
+                fsV.copyFileSync = () => { const e: any = new Error('stubbed copy failure'); e.code = 'EACCES'; throw e; };
+                console.warn = () => { /* expected: the copy-failed + refusal WARNs */ };
+                try {
+                    wrote = c.write(rebuiltV, ['some-antigravity-convo'], aggregateFromPerConvo(rebuiltV, new Map()), new Map());
+                } finally {
+                    fsV.copyFileSync = realCopy;
+                    console.warn = originalWarn;
+                }
+
+                assert.strictEqual(wrote, false,
+                    'V3: write() REFUSES a stale rebuild when the preservation copy failed. A failed copy makes the ' +
+                    'rebuild unrecoverable, so the permission to rebuild is conditional on the copy, not on the ' +
+                    'classification');
+                assert.strictEqual(fsV.readFileSync(p, 'utf-8'), fixtureV(1),
+                    'V3: the original file is BYTE-IDENTICAL — nothing was overwritten on the way to refusing');
+                assert.strictEqual(copiesOfV(p).length, 0, 'V3: sanity — the copy genuinely did not happen');
+
+                // And it keeps refusing on later passes, rather than the
+                // per-instance backupTaken flag being mistaken for success.
+                let wroteAgain;
+                fsV.copyFileSync = () => { const e: any = new Error('stubbed copy failure'); e.code = 'EACCES'; throw e; };
+                console.warn = () => { /* expected */ };
+                try {
+                    wroteAgain = c.write(rebuiltV, ['some-antigravity-convo'], aggregateFromPerConvo(rebuiltV, new Map()), new Map());
+                } finally {
+                    fsV.copyFileSync = realCopy;
+                    console.warn = originalWarn;
+                }
+                assert.strictEqual(wroteAgain, false,
+                    'V3: a SECOND pass on the same instance still refuses — "an attempt was made" must not read as ' +
+                    '"a copy exists", or the second write would sail through on a failed backup');
+                assert.strictEqual(fsV.readFileSync(p, 'utf-8'), fixtureV(1), 'V3: still byte-identical');
+
+                fsV.unlinkSync(p);
+            }
+
+            // ─── V4: the three genuine refusal states are UNCHANGED ───
+            // The archive guarantee. Each fixture carries
+            // LEGACY_CLAUDE_ARCHIVE_ID, so "byte-identical" is the archive
+            // surviving, not an empty file surviving.
+            {
+                const refusals: Array<[string, string, string]> = [
+                    ['trunc', fixtureV(3).slice(0, 40),
+                        'a truncated file: contents UNKNOWN — the tail that is missing could have held anything'],
+                    ['nofield', JSON.stringify({ schemaVersion: CACHE_SCHEMA_VERSION, fetchedIds: [], stats: {} }),
+                        'a missing top-level field: structurally undecodable, contents UNKNOWN'],
+                    ['v99', fixtureV(99),
+                        'a schemaVersion ABOVE this build\'s: written by a NEWER build, whose data this build cannot ' +
+                        'interpret and must not clobber'],
+                ];
+                for (const [name, content, why] of refusals) {
+                    const p = seedV(name, content);
+                    const c = cacheAtV(p);
+                    assert.strictEqual(c.probe(), 'unreadable',
+                        `V4/${name}: still probes UNREADABLE — ${why}. Reclassifying v1 must not drag any of these ` +
+                        'across with it');
+                    assert.strictEqual(writeRebuiltV(c), false,
+                        `V4/${name}: write() still refuses — the archive guarantee`);
+                    assert.strictEqual(fsV.readFileSync(p, 'utf-8'), content,
+                        `V4/${name}: the file is BYTE-IDENTICAL after a refused write. On a real machine this file ` +
+                        'holds claude-code-imported — 175 entries, 12,942,976,240 tokens, hand-imported, with no ' +
+                        'source files anywhere');
+                    for (const f of copiesOfV(p)) fsV.unlinkSync(f);
+                    fsV.unlinkSync(p);
+                }
+            }
+
+            // ─── V5: write() reports refusal vs success, and copies do not accumulate ───
+            {
+                // Return value on the two permitting states.
+                const pAbsent = pathV.join(dirV, 'absent.json');
+                assert.ok(!fsV.existsSync(pAbsent), 'sanity: a genuinely absent file');
+                const cAbsent = cacheAtV(pAbsent);
+                assert.strictEqual(writeRebuiltV(cAbsent), true,
+                    'V5: write() returns TRUE on a completed write (absent file). Pre-fix it returned void, so ' +
+                    'refreshFromStore and twoPhaseFullFetch could not tell refusal from success and published a ' +
+                    'rebuilt, archive-less ledger into the panel off a write that never landed');
+                assert.strictEqual(cAbsent.probe(), 'ok', 'sanity: ...and the file now decodes');
+                assert.strictEqual(writeRebuiltV(cAbsent), true, 'V5: TRUE again over an ok file');
+                fsV.unlinkSync(pAbsent);
+
+                // Return value on refusal, plus no accumulation across passes.
+                // backupTaken is per-instance (per window per session), so
+                // without the on-disk check every window launch over a
+                // still-refused ~1.3 MB file dropped another copy beside it.
+                const p = seedV('accum', fixtureV(99));
+                assert.strictEqual(writeRebuiltV(cacheAtV(p)), false,
+                    'V5: write() returns FALSE on a refusal');
+                assert.strictEqual(copiesOfV(p).length, 1, 'V5: the first rejected pass preserves one copy');
+
+                // The copy filename is a millisecond-resolution ISO stamp, so
+                // two passes inside the same millisecond would collide onto one
+                // filename and the count below would read 1 even with the
+                // on-disk check removed — a silently unfailable assertion.
+                // Separate the passes in time so the second pass would
+                // genuinely produce a SECOND file if nothing stopped it.
+                await new Promise((r) => setTimeout(r, 8));
+
+                assert.strictEqual(writeRebuiltV(cacheAtV(p)), false,
+                    'V5: a second, INDEPENDENT StatsCache instance over the same path also refuses');
+                assert.strictEqual(copiesOfV(p).length, 1,
+                    'V5: two successive rejected passes leave EXACTLY ONE .rejected-* file. Pre-fix the second ' +
+                    'instance deposited another full-size copy, and so did every window launch after it');
+                assert.strictEqual(fsV.readFileSync(p, 'utf-8'), fixtureV(99), 'V5: and the file is still untouched');
+                for (const f of copiesOfV(p)) fsV.unlinkSync(f);
+                fsV.unlinkSync(p);
+            }
+
+            fsV.rmSync(dirV, { recursive: true, force: true });
+            console.log('schema classification (V1 stale rebuild, V3 failed-copy refusal, V4 three refusals, V5 write() return + no accumulation): all checks passed');
+        }
+
+        // ─── V6: the callers stop publishing state off a refused write ───
+        //
+        // The consequence Fix 2 exists for. refreshFromStore sets
+        // this.deepStatsCache / this.currentPerConvo from `merged`, which on
+        // the cold-boot path is built against an EMPTY base — so on a refusal
+        // the panel showed a from-scratch, archive-less ledger while the real
+        // file sat intact on disk. It looked like 12.94B tokens had been lost
+        // when nothing was.
+        //
+        // Drives the REAL refreshFromStore (only cache.write is redirected to a
+        // temp path); its title fetch fails harmlessly against a closed port.
+        {
+            const fsV6 = require('fs'); const pathV6 = require('path'); const osV6 = require('os');
+            const { UsageStatsService: UsageStatsServiceV6 } = require('./index');
+            const { StatsCache: StatsCacheV6 } = require('./cache');
+
+            if (listConversations().length === 0) {
+                console.log('refused-write publication guard: SKIPPED — no Antigravity conversations to rebuild from');
+            } else {
+                const pV6 = pathV6.join(osV6.tmpdir(), `ag-switchboard-selfcheck-v6-${Date.now()}.json`);
+                const contentV6 = JSON.stringify({
+                    schemaVersion: 99,
+                    perConvo: { [LEGACY_CLAUDE_ARCHIVE_ID]: { entries: [
+                        { ts: '2026-03-03T00:00:00.000Z', model: 'archived', provider: 'claude', responseId: 'cc-archive-v6', source: 'metadata', inp: 12345678, out: 87654321, cache: 0, cacheWrite: 0, reasoning: 0 },
+                    ] } },
+                    fetchedIds: [LEGACY_CLAUDE_ARCHIVE_ID],
+                    stats: { totalCalls: 1 },
+                    updatedAt: '2026-09-06T00:00:00.000Z',
+                });
+                fsV6.writeFileSync(pV6, contentV6, 'utf-8');
+
+                class V99CacheV6 extends StatsCacheV6 { get filePath() { return pV6; } }
+                const svcV6 = new UsageStatsServiceV6();
+                svcV6.cache = new V99CacheV6();
+
+                const originalWarn = console.warn;
+                console.warn = () => { /* expected: ECONNREFUSED from the closed port, plus the refusal WARN */ };
+                let returned;
+                try {
+                    returned = await svcV6.refreshFromStore({ port: 59997, csrfToken: 'fake', protocol: 'http' }, null);
+                } finally { console.warn = originalWarn; }
+
+                assert.strictEqual(returned, null,
+                    'V6: refreshFromStore returns null when the cache refused the write — it did not "complete"');
+                assert.strictEqual(svcV6.deepStatsCache, null,
+                    'V6: this.deepStatsCache is NOT published off a refused write. Pre-fix it held the rebuilt, ' +
+                    'archive-less ledger, so the panel reported the 12.94B-token archive as gone while the file on ' +
+                    'disk was perfectly intact');
+                assert.strictEqual(Object.keys(svcV6.currentPerConvo).length, 0,
+                    'V6: ...and neither is this.currentPerConvo, which the next Claude pass would otherwise merge ' +
+                    'against as if it were a real ledger');
+                assert.strictEqual(fsV6.readFileSync(pV6, 'utf-8'), contentV6,
+                    'V6: the rejected file is byte-identical — the underlying refusal is intact');
+
+                const stemV6 = pathV6.basename(pV6).replace(/\.json$/, '') + '.rejected-';
+                for (const f of fsV6.readdirSync(pathV6.dirname(pV6))) {
+                    if (f.startsWith(stemV6)) fsV6.unlinkSync(pathV6.join(pathV6.dirname(pV6), f));
+                }
+                fsV6.unlinkSync(pV6);
+                console.log('refused-write publication guard: all checks passed');
+            }
+        }
+
+        // ─── V7: a v1 file recovers even with nothing else to write it ───
+        //
+        // The v1 user's recovery must not depend on the Antigravity path
+        // happening to run. On a zero-Antigravity install refreshFromStore
+        // returns early without writing and twoPhaseFullFetch never writes
+        // either, so refreshClaudeUsage's own early exit is the last gate. It
+        // is keyed on probe()==='unreadable' rather than on bare existence
+        // precisely so a stale file does not strand that user forever — while
+        // an 'unreadable' one still bails (pinned by section C3 above).
+        {
+            const fsV7 = require('fs'); const pathV7 = require('path'); const osV7 = require('os');
+            const { UsageStatsService: UsageStatsServiceV7 } = require('./index');
+            const { StatsCache: StatsCacheV7 } = require('./cache');
+
+            const pV7 = pathV7.join(osV7.tmpdir(), `ag-switchboard-selfcheck-v7-${Date.now()}.json`);
+            fsV7.writeFileSync(pV7, JSON.stringify({
+                schemaVersion: 1,
+                perConvo: { 'some-antigravity-convo': { entries: [] } },
+                fetchedIds: ['some-antigravity-convo'],
+                stats: { totalCalls: 0 },
+                updatedAt: '2026-09-06T00:00:00.000Z',
+            }), 'utf-8');
+
+            class V1CacheV7 extends StatsCacheV7 { get filePath() { return pV7; } }
+            const svcV7 = new UsageStatsServiceV7();
+            svcV7.cache = new V1CacheV7();
+            assert.strictEqual(svcV7.cache.probe(), 'stale', 'sanity: the fixture is the stale case');
+            assert.strictEqual(Object.keys(svcV7.claudeMtimes).length, 0,
+                'V7 non-vacuity: a fresh instance, so this pass is a genuine cold ingest (same as section A)');
+            assert.ok(claudeKeysHoistA.length > 0,
+                'V7 non-vacuity: this machine has Claude transcripts a cold pass ingests (proved in section A), so a ' +
+                'true below is the rebuild landing, not an empty ingest');
+
+            const originalWarn = console.warn;
+            console.warn = () => { /* expected: the preservation WARN */ };
+            let persistedV7;
+            try { persistedV7 = await svcV7.refreshClaudeUsage(); } finally { console.warn = originalWarn; }
+
+            assert.strictEqual(persistedV7, true,
+                'V7: refreshClaudeUsage rebuilds over a stale file instead of bailing. Otherwise a zero-Antigravity ' +
+                'install with a v1 cache stays stuck forever — nothing else on that install ever writes');
+            const afterV7 = JSON.parse(fsV7.readFileSync(pV7, 'utf-8'));
+            assert.strictEqual(afterV7.schemaVersion, CACHE_SCHEMA_VERSION, 'V7: the file is at the current schema now');
+            assert.ok(Object.keys(afterV7.perConvo).filter(isClaudeConvo).length > 0,
+                'V7: ...and Claude data actually landed in it');
+
+            const stemV7 = pathV7.basename(pV7).replace(/\.json$/, '') + '.rejected-';
+            for (const f of fsV7.readdirSync(pathV7.dirname(pV7))) {
+                if (f.startsWith(stemV7)) fsV7.unlinkSync(pathV7.join(pathV7.dirname(pV7), f));
+            }
+            fsV7.unlinkSync(pV7);
+            console.log('stale-cache recovery with no Antigravity writer: all checks passed');
+        }
     })();
 }
 

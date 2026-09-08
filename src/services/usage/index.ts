@@ -256,6 +256,24 @@ export class UsageStatsService {
 
             this.currentTitleMap = summaries.titleMap;
             this.currentStepCounts = summaries.stepCounts;
+
+            // Snapshotted BEFORE Phase 1 publishes anything into the fields the
+            // panel reads. cache.write() refuses while the file on disk cannot
+            // be decoded (it may hold the un-regenerable archive) — and in that
+            // case nothing was persisted, so leaving these fields holding a
+            // from-scratch rebuild would show the user an archive-less ledger
+            // while the real file sits intact on disk: it reads as 12.94B
+            // tokens lost when nothing was lost at all. Revert instead, so the
+            // panel shows no data rather than wrong data.
+            const priorPerConvo = this.currentPerConvo;
+            const priorStats = this.deepStatsCache;
+            const unpublish = () => {
+                this.currentPerConvo = priorPerConvo;
+                this.deepStatsCache = priorStats;
+                log.warn('twoPhaseFullFetch: the cache refused the write — discarding this rebuild rather than '
+                    + 'publishing a ledger that was never persisted');
+            };
+
             this.currentPerConvo = { ...hotData };
 
             const hotStats = aggregateFromPerConvo(hotData, summaries.titleMap);
@@ -266,7 +284,10 @@ export class UsageStatsService {
             if (cold.length === 0) {
                 log.diag('twoPhaseFullFetch: no cold conversations — writing cache and returning Phase 1 result');
                 const entryCounts = this.buildEntryCounts();
-                this.cache.write(hotData, allIds, hotStats, summaries.titleMap, summaries.stepCounts, entryCounts, mtimes);
+                if (!this.cache.write(hotData, allIds, hotStats, summaries.titleMap, summaries.stepCounts, entryCounts, mtimes)) {
+                    unpublish();
+                    return null;
+                }
                 return hotStats;
             }
 
@@ -286,7 +307,10 @@ export class UsageStatsService {
 
             // Build entryCounts for offset-based delta on next incremental
             const entryCounts = this.buildEntryCounts();
-            this.cache.write(merged, allIds, fullStats, summaries.titleMap, summaries.stepCounts, entryCounts, mtimes);
+            if (!this.cache.write(merged, allIds, fullStats, summaries.titleMap, summaries.stepCounts, entryCounts, mtimes)) {
+                unpublish();
+                return null;
+            }
             log.info(`twoPhaseFullFetch: done — ${fullStats.totalCalls} calls, ${Object.keys(merged).length} convos`);
 
             if (onBackfillComplete) onBackfillComplete(fullStats);
@@ -458,10 +482,21 @@ export class UsageStatsService {
         };
         stats.health = this.lastHealth;
 
+        // Persist FIRST, publish second. cache.write() refuses while the file
+        // on disk cannot be decoded, and on the cold-boot path (diskCache null)
+        // `merged` was built against an empty base — so on a refusal these two
+        // fields would hold a from-scratch, archive-less rebuild while the real
+        // file sits intact on disk, and the panel would report 12.94B tokens
+        // lost when nothing was lost. Publish only what actually landed.
+        const persisted = this.cache.write(merged, Object.keys(merged), stats, titleMap,
+            this.currentStepCounts, diskCache?.entryCounts, mtimes, countingChangedAt ?? undefined);
+        if (!persisted) {
+            log.warn('refreshFromStore: the cache refused the write — discarding this rebuild rather than '
+                + 'publishing a ledger that was never persisted');
+            return null;
+        }
         this.deepStatsCache = stats;
         this.currentPerConvo = merged;
-        this.cache.write(merged, Object.keys(merged), stats, titleMap,
-            this.currentStepCounts, diskCache?.entryCounts, mtimes, countingChangedAt ?? undefined);
         log.info(`refreshFromStore: complete — ${stats.totalCalls} calls across ${Object.keys(merged).length} conversations`);
 
         // Non-blocking: compare a few conversations the server can still serve.
@@ -561,7 +596,20 @@ export class UsageStatsService {
             // here because it also skips a pointless merge + aggregate pass,
             // and because returning false stops this method from advancing
             // claudeMtimes off a write that was never going to happen.
-            if (!diskCache && fs.existsSync(this.cache.filePath)) {
+            //
+            // Keyed on probe()'s 'unreadable' rather than on bare existence,
+            // because read() also returns null for a 'stale' file — a KNOWN,
+            // superseded, provably archive-free schema (v1, or version-absent;
+            // see StatsCache's ARCHIVE_FREE_LEGACY_VERSIONS). Bailing there too
+            // would strand exactly the user this early exit is not meant to
+            // affect: on a zero-Antigravity install nothing else ever writes,
+            // so a v1 file would keep read() returning null forever and Claude
+            // tracking would stay off with no way back short of deleting a
+            // dotfile. The archive guarantee is untouched by the distinction —
+            // 'unreadable' still bails here, and StatsCache.write() still
+            // refuses it outright and permits a 'stale' rebuild only once a
+            // preserved copy is confirmed on disk.
+            if (!diskCache && this.cache.probe() === 'unreadable') {
                 log.warn('refreshClaudeUsage: cache file exists but read() returned null — refusing to write, would clobber the ledger');
                 return false;
             }
@@ -825,12 +873,24 @@ export class UsageStatsService {
             };
             stats.health = this.lastHealth;
 
-            this.deepStatsCache = stats;
-            this.currentPerConvo = merged;
             // countingChangedAt carried forward verbatim: this is the 'server'
             // rollback path, not the one that sets it, and a write that omitted
             // it would erase the marker if a user ever toggles back to it.
-            this.cache.write(merged, mergedIds, stats, summaries.titleMap, summaries.stepCounts, entryCounts, { ...cachedMtimes, ...currentMtimes }, diskCache.countingChangedAt);
+            //
+            // Persist before publishing, same rule as refreshFromStore and
+            // twoPhaseFullFetch. A refusal is not reachable on this path today
+            // — it only runs when fetchDeepStats already decoded the file — but
+            // the ordering costs nothing and keeps every write caller honest,
+            // which is the whole reason the refusal lives in StatsCache rather
+            // than in one caller's guard.
+            const persisted = this.cache.write(merged, mergedIds, stats, summaries.titleMap, summaries.stepCounts, entryCounts, { ...cachedMtimes, ...currentMtimes }, diskCache.countingChangedAt);
+            if (!persisted) {
+                log.warn('incrementalRefresh: the cache refused the write — discarding this pass rather than '
+                    + 'publishing a ledger that was never persisted');
+                return false;
+            }
+            this.deepStatsCache = stats;
+            this.currentPerConvo = merged;
 
             log.info(`incrementalRefresh: complete — totalCalls=${stats.totalCalls} (${newIds.length} new + ${changedIds.length} changed convos updated)`);
             return true;
